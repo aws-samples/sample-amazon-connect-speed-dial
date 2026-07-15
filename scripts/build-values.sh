@@ -35,18 +35,38 @@ else
   ANSWER_MODEL="us.amazon.nova-pro-v1:0"
 fi
 
-# Lex locale, TTS language code, Polly voice, prompt language, and the
+# Lex locale, TTS language code, voices, prompt language, and the
 # self-service fallback are derived from language+gender.
+#
+# Two voices are emitted per deployment:
+# - sonicVoiceId: the Nova 2 Sonic speech-to-speech voice, set on the Lex bot
+#   locale (unifiedSpeechSettings.speechFoundationModel.voiceId, lowercase).
+#   This is the voice callers hear during the AI-agent conversation; it takes
+#   priority over any flow-level voice while the bot session is active.
+# - voiceId: the generative Polly voice for the flow's Set-voice block, used
+#   only for TTS prompts OUTSIDE the bot session (goodbye/error/consent
+#   messages). Chosen to match the Sonic speaker where the catalog allows:
+#   Tiffany/Matthew and Lennart exist in the Polly generative catalog; Tina
+#   does not (verified via polly describe-voices), so German-feminine falls
+#   back to Vicki for out-of-bot prompts while Sonic speaks as tina.
 if [[ "$language" == "de" ]]; then
   lexLocaleId="de_DE"; ttsLanguageCode="de-DE"
   promptLanguage="German"
   selfServiceFallback="Ich habe darauf leider keine Antwort."
-  if [[ "$voiceGender" == "masculine" ]]; then voiceId="Daniel"; else voiceId="Vicki"; fi
+  if [[ "$voiceGender" == "masculine" ]]; then
+    sonicVoiceId="lennart"; voiceId="Lennart"
+  else
+    sonicVoiceId="tina"; voiceId="Vicki"
+  fi
 else
   lexLocaleId="en_US"; ttsLanguageCode="en-US"
   promptLanguage="English"
   selfServiceFallback="I don't have an answer."
-  if [[ "$voiceGender" == "masculine" ]]; then voiceId="Matthew"; else voiceId="Joanna"; fi
+  if [[ "$voiceGender" == "masculine" ]]; then
+    sonicVoiceId="matthew"; voiceId="Matthew"
+  else
+    sonicVoiceId="tiffany"; voiceId="Tiffany"
+  fi
 fi
 
 # --- projectName: required + validated -------------------------------------
@@ -123,6 +143,7 @@ jq -n \
   --arg lexLocaleId "$lexLocaleId" \
   --arg ttsLanguageCode "$ttsLanguageCode" \
   --arg voiceId "$voiceId" \
+  --arg sonicVoiceId "$sonicVoiceId" \
   --arg promptLanguage "$promptLanguage" \
   --arg selfServiceFallback "$selfServiceFallback" \
   --arg orchestrationModelId "$ORCH_MODEL" \
@@ -133,6 +154,7 @@ jq -n \
     encryptionEnabled:$encryptionEnabled, customerProfilesEnabled:$customerProfilesEnabled,
     frontendEnabled:$frontendEnabled, dataLakeEnabled:$dataLakeEnabled,
     lexLocaleId:$lexLocaleId, ttsLanguageCode:$ttsLanguageCode, voiceId:$voiceId,
+    sonicVoiceId:$sonicVoiceId,
     promptLanguage:$promptLanguage, selfServiceFallback:$selfServiceFallback,
     orchestrationModelId:$orchestrationModelId, answerGenModelId:$answerGenModelId}' \
   > "$OUT"
