@@ -1,0 +1,12 @@
+{
+  "projectName": "acme-full",
+  "companyName": "Acme",
+  "greeting": "Hi from Acme, how can I help?",
+  "transferEnabled": true,
+  "toolEnabled": true,
+  "contextInjectionEnabled": true,
+  "recordingEnabled": true,
+  "encryptionEnabled": false,
+  "customerProfilesEnabled": false,
+  "frontendEnabled": false
+}

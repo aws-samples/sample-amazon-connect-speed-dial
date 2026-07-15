@@ -1,0 +1,28 @@
+{
+  "name": "{{projectName}}",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "connect-blueprint": "bin/connect-blueprint.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "test:flow-compose": "TS_NODE_TRANSPILE_ONLY=1 ts-node lib/flow-compose.test.ts"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "9.0.10",
+    "@types/node": "20.19.43",
+    "aws-cdk": "2.1128.0",
+    "esbuild": "0.20.2",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@cdklabs/cdk-construct-connect-datalake": "0.0.16",
+    "aws-cdk-lib": "2.260.0",
+    "constructs": "10.6.0",
+    "jsonwebtoken": "9.0.3",
+    "source-map-support": "0.5.21"
+  }
+}

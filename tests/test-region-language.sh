@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/templates/cdk-app"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# Render order→values→templates for one combo and assert the rendered values.
+check() {
+  local region="$1" language="$2" gender="$3" voice="$4" locale="$5" tts="$6" modelPrefix="$7"
+  local order="$TMP/order.json" values="$TMP/values.json" dest="$TMP/rendered"
+  rm -rf "$dest"
+  jq -n --arg r "$region" --arg l "$language" --arg g "$gender" \
+    '{projectName:"loc-test", region:$r, language:$l, voiceGender:$g}' > "$order"
+  "$ROOT/scripts/build-values.sh" "$order" "$values" >/dev/null
+  "$ROOT/scripts/render-templates.sh" "$values" "$SRC" "$dest" >/dev/null
+
+  # The flow must set the contact LanguageCode so Connect calls the Lex V2 bot
+  # with the matching locale; without it the contact defaults to en_US and a
+  # de_DE-only bot returns ResourceNotFoundException at runtime.
+  grep -q "\"LanguageCode\": \"__TTS_LANGUAGE_CODE__\"" "$dest/flows/nova-sonic-base.json" || fail "$region/$language/$gender: flow does not set contact LanguageCode"
+
+  grep -q "localeId: '$locale'" "$dest/lib/lex-bot-stack.ts" || fail "$region/$language/$gender: Lex localeId $locale"
+  grep -q "locale: '$locale'" "$dest/lib/wisdom-stack.ts" || fail "$region/$language/$gender: agent locale $locale"
+  # Prompts must instruct the agent to respond in the configured language.
+  local plang; case "$language" in de) plang="German";; *) plang="English";; esac
+  grep -q "respond in $plang" "$dest/prompts/orchestration.md" || fail "$region/$language/$gender: orchestration prompt language $plang"
+  grep -q "Answer in $plang" "$dest/prompts/self-service.md" || fail "$region/$language/$gender: self-service prompt language $plang"
+  # Goodbye/error flow strings are synth-time placeholders (substituted in CDK).
+  grep -q '"Text": "__BYE_MESSAGE__"' "$dest/flows/nova-sonic-base.json" || fail "$region/$language/$gender: __BYE_MESSAGE__ placeholder"
+  grep -q '"Text": "__ERROR_MESSAGE__"' "$dest/flows/nova-sonic-base.json" || fail "$region/$language/$gender: __ERROR_MESSAGE__ placeholder"
+  # contact-flow-stack.ts holds the rendered voice/tts in the __PROP__ subs map.
+  grep -q "__VOICE_ID__: \`$voice\`" "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: voice $voice"
+  grep -q "__TTS_LANGUAGE_CODE__: \`$tts\`" "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: tts $tts"
+  # contact-flow-stack carries the localized goodbye/error/consent strings.
+  # The consent text now lives in the FLOW_STRINGS map in contact-flow-stack.ts
+  # (flow-compose.ts takes it as a parameter), so assert it there.
+  if [[ "$language" == "de" ]]; then
+    grep -q 'Auf Wiederhören!' "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: German goodbye in flow stack"
+    grep -q 'Willkommen beim Kundenservice von' "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: German consent in flow stack"
+  else
+    grep -q 'Goodbye!' "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: English goodbye in flow stack"
+    grep -q 'Welcome to __COMPANY_NAME__ customer service' "$dest/lib/contact-flow-stack.ts" || fail "$region/$language/$gender: English consent in flow stack"
+  fi
+  local model; model="$(jq -r '.orchestrationModelId' "$values")"
+  [[ "$model" == "$modelPrefix"* ]] || fail "$region/$language/$gender: model prefix $modelPrefix (got $model)"
+  # region is emitted to values.json and rendered as a hardcoded pin in the CDK
+  # app entry, so the deploy region can never silently fall back to the profile.
+  [[ "$(jq -r '.region' "$values")" == "$region" ]] || fail "$region/$language/$gender: region not emitted to values.json"
+  grep -q "region: '$region'" "$dest/bin/connect-blueprint.ts" || fail "$region/$language/$gender: region not pinned in bin/connect-blueprint.ts"
+  echo "ok: $region / $language / $gender -> $voice $locale $tts ${modelPrefix}*"
+}
+
+check us-east-1    en feminine  Joanna  en_US en-US "us."
+check us-east-1    en masculine Matthew en_US en-US "us."
+check us-east-1    de feminine  Vicki   de_DE de-DE "us."
+check eu-central-1 de masculine Daniel  de_DE de-DE "eu."
+check eu-central-1 en feminine  Joanna  en_US en-US "eu."
+
+echo "PASS: region-language-voice matrix"

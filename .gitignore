@@ -1,0 +1,17 @@
+# --- Local tooling / editor state ---
+.claude/settings.local.json
+.DS_Store
+
+# --- Account-specific deployment config (never commit — contains real values) ---
+# Produced by scripts/build-values.sh from .connect-skill-order.json
+.connect-skill-values.json
+.connect-skill-order.json
+
+# --- Per-deployment stack outputs (real account IDs, instance IDs, pool IDs) ---
+# Written by `cdk deploy --outputs-file cdk-outputs.json` in any rendered project
+cdk-outputs.json
+
+# --- Node / CDK build artifacts (in the template and any rendered project) ---
+node_modules/
+cdk.out/
+*.tsbuildinfo

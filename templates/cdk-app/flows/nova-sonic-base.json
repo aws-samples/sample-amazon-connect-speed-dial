@@ -1,0 +1,169 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "enable-logs",
+  "Metadata": {
+    "entryPointPosition": { "x": 40, "y": 40 },
+    "ActionMetadata": {
+      "enable-logs": { "position": { "x": 250, "y": 40 } },
+      "set-voice": {
+        "position": { "x": 520, "y": 40 },
+        "parameters": { "TextToSpeechVoice": { "languageCode": "__TTS_LANGUAGE_CODE__" } },
+        "overrideConsoleVoice": true
+      },
+      "set-language": { "position": { "x": 655, "y": 200 } },
+      "set-queue": { "position": { "x": 790, "y": 40 } },
+      "create-wisdom-session": {
+        "position": { "x": 1060, "y": 40 },
+        "children": ["update-contact-data", "connect-lex-bot"],
+        "parameters": {
+          "WisdomAssistantArn": {
+            "useAIAgentDropdown": true,
+            "aiAgentName": "__ORCHESTRATION_AGENT_NAME__",
+            "aiAgentVersionArn": "__ORCHESTRATION_AGENT_ARN__"
+          }
+        },
+        "fragments": { "SetContactData": "update-contact-data" },
+        "useAIAgentDropdown": true,
+        "aiAgentName": "__ORCHESTRATION_AGENT_NAME__",
+        "aiAgentVersionArn": "__ORCHESTRATION_AGENT_ARN__"
+      },
+      "update-contact-data": {
+        "position": { "x": 1060, "y": 40 },
+        "dynamicParams": []
+      },
+      "connect-lex-bot": {
+        "position": { "x": 1060, "y": 40 },
+        "parameters": {
+          "LexV2Bot": {
+            "AliasArn": {
+              "displayName": "live",
+              "useLexBotDropdown": true,
+              "lexV2BotName": "__LEX_BOT_NAME__"
+            }
+          }
+        },
+        "dynamicMetadata": {
+          "x-amz-lex:audio:end-timeout-ms:*:*": false,
+          "x-amz-lex:q-in-connect:ai-agent-arn": false
+        },
+        "useLexBotDropdown": true,
+        "lexV2BotName": "__LEX_BOT_NAME__",
+        "lexV2BotAliasName": "live",
+        "conditionMetadata": []
+      },
+      "compare-tool": {
+        "position": { "x": 1340, "y": 40 },
+        "conditions": [],
+        "conditionMetadata": [
+          {
+            "id": "cond-escalate",
+            "operator": { "name": "Equals", "value": "Equals", "shortDisplay": "=" },
+            "value": "Escalate"
+          },
+          {
+            "id": "cond-complete",
+            "operator": { "name": "Equals", "value": "Equals", "shortDisplay": "=" },
+            "value": "Complete"
+          }
+        ]
+      },
+      "bye-msg": { "position": { "x": 1620, "y": 40 } },
+      "error-msg": { "position": { "x": 1620, "y": 320 } },
+      "disconnect": { "position": { "x": 1900, "y": 40 } }
+    },
+    "Annotations": [],
+    "name": "Nova Sonic AI Agent Flow",
+    "description": "Nova Sonic AI voice agent self-service flow",
+    "type": "contactFlow",
+    "status": "PUBLISHED",
+    "hash": {}
+  },
+  "Actions": [
+    {
+      "Identifier": "enable-logs",
+      "Type": "UpdateFlowLoggingBehavior",
+      "Parameters": { "FlowLoggingBehavior": "Enabled" },
+      "Transitions": { "NextAction": "set-voice" }
+    },
+    {
+      "Identifier": "set-voice",
+      "Type": "UpdateContactTextToSpeechVoice",
+      "Parameters": { "TextToSpeechVoice": "__VOICE_ID__", "TextToSpeechEngine": "Generative", "TextToSpeechStyle": "None" },
+      "Transitions": { "NextAction": "set-language", "Errors": [{ "NextAction": "error-msg", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "set-language",
+      "Type": "UpdateContactData",
+      "Parameters": { "LanguageCode": "__TTS_LANGUAGE_CODE__" },
+      "Transitions": { "NextAction": "set-queue", "Errors": [{ "NextAction": "error-msg", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "set-queue",
+      "Type": "UpdateContactTargetQueue",
+      "Parameters": { "QueueId": "__QUEUE_ARN__" },
+      "Transitions": { "NextAction": "create-wisdom-session", "Errors": [{ "NextAction": "error-msg", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "create-wisdom-session",
+      "Type": "CreateWisdomSession",
+      "Parameters": { "WisdomAssistantArn": "__ASSISTANT_ARN__" },
+      "Transitions": { "NextAction": "update-contact-data", "Errors": [{ "NextAction": "error-msg", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "update-contact-data",
+      "Type": "UpdateContactData",
+      "Parameters": { "WisdomSessionArn": "$.Wisdom.SessionArn" },
+      "Transitions": { "NextAction": "connect-lex-bot", "Errors": [{ "NextAction": "error-msg", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "connect-lex-bot",
+      "Type": "ConnectParticipantWithLexBot",
+      "Parameters": {
+        "Text": "__GREETING__",
+        "LexV2Bot": { "AliasArn": "__LEX_BOT_ALIAS_ARN__" },
+        "LexSessionAttributes": {
+          "x-amz-lex:audio:end-timeout-ms:*:*": "1000",
+          "x-amz-lex:q-in-connect:ai-agent-arn": "__ORCHESTRATION_AGENT_ARN__"
+        }
+      },
+      "Transitions": {
+        "NextAction": "compare-tool",
+        "Errors": [
+          { "NextAction": "compare-tool", "ErrorType": "NoMatchingCondition" },
+          { "NextAction": "error-msg", "ErrorType": "NoMatchingError" }
+        ]
+      }
+    },
+    {
+      "Identifier": "compare-tool",
+      "Type": "Compare",
+      "Parameters": { "ComparisonValue": "$.Lex.SessionAttributes.Tool" },
+      "Transitions": {
+        "NextAction": "bye-msg",
+        "Conditions": [
+          { "NextAction": "bye-msg", "Condition": { "Operator": "Equals", "Operands": ["Escalate"] } },
+          { "NextAction": "bye-msg", "Condition": { "Operator": "Equals", "Operands": ["Complete"] } }
+        ],
+        "Errors": [{ "NextAction": "bye-msg", "ErrorType": "NoMatchingCondition" }]
+      }
+    },
+    {
+      "Identifier": "bye-msg",
+      "Type": "MessageParticipant",
+      "Parameters": { "Text": "__BYE_MESSAGE__" },
+      "Transitions": { "NextAction": "disconnect", "Errors": [{ "NextAction": "disconnect", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "error-msg",
+      "Type": "MessageParticipant",
+      "Parameters": { "Text": "__ERROR_MESSAGE__" },
+      "Transitions": { "NextAction": "disconnect", "Errors": [{ "NextAction": "disconnect", "ErrorType": "NoMatchingError" }] }
+    },
+    {
+      "Identifier": "disconnect",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}
