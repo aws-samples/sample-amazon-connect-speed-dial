@@ -84,8 +84,11 @@ US/Virginia, English, feminine voice). Ask one question at a time via AskUserQue
    - Ask: "Which voice?"
    - Options: **Feminine** [default] / **Masculine**
    - Store in order object as: `voiceGender` = `feminine` or `masculine`
-   - Resolves to a generative Polly voice per language: English → Joanna/Matthew,
-     German → Vicki/Daniel.
+   - Resolves to a Nova 2 Sonic speech-to-speech voice on the bot locale
+     (English → tiffany/matthew, German → tina/lennart) plus a matching
+     generative Polly voice for out-of-bot flow prompts (English →
+     Tiffany/Matthew, German → Vicki/Lennart — Tina is not yet in the Polly
+     catalog, so German-feminine uses Vicki for flow TTS).
 
 ### Aperitif side — Custom prompts [Ready, optional]
 
@@ -120,7 +123,7 @@ These files are the source of truth and survive re-renders. If the user keeps th
 Future items (for transparency only):
 - **Model tier**: Balanced (Haiku orchestration + Nova Pro answers) / Fast / Best
 - **Knowledge base**: Empty for now / From a website / From an S3 path
-- **Voice & persona**: Joanna (warm & concise) / other TTS options
+- **Voice & persona**: Tiffany (warm & concise) / other Nova Sonic voices
 
 ### Sides — Add-on capabilities [Multi-select]
 

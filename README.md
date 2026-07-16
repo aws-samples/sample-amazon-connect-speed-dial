@@ -23,7 +23,7 @@ What the deployed contact center supports today:
 | **Contact-events logging** | ✅ | EventBridge logging of contact events is always deployed. |
 | **Language selection** | ✅ | English (`en_US`) or German (`de_DE`) — localizes the greeting, agent and self-service prompts, goodbye/error messages, the recording-consent prompt, the Lex bot locale, and the TTS voice/language. Any region × language combination is valid. |
 | **Region selection** | ✅ | `us-east-1` (N. Virginia, default) or `eu-central-1` (Frankfurt). Both run the full Connect + Q-in-Connect + Lex + Nova Sonic voice stack; the Bedrock inference-profile prefix (`us.*` / `eu.*`) is derived from the region. |
-| **Voice selection** | ✅ | Feminine (default) or masculine generative Polly voice, resolved per language (English → Joanna/Matthew, German → Vicki/Daniel). |
+| **Voice selection** | ✅ | Feminine (default) or masculine Nova 2 Sonic speech-to-speech voice, resolved per language (English → tiffany/matthew, German → tina/lennart); out-of-bot flow prompts use a matching generative Polly voice. |
 
 Planned / not yet available:
 

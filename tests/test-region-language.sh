@@ -8,7 +8,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # Render order→values→templates for one combo and assert the rendered values.
 check() {
-  local region="$1" language="$2" gender="$3" voice="$4" locale="$5" tts="$6" modelPrefix="$7"
+  local region="$1" language="$2" gender="$3" voice="$4" sonicVoice="$5" locale="$6" tts="$7" modelPrefix="$8"
   local order="$TMP/order.json" values="$TMP/values.json" dest="$TMP/rendered"
   rm -rf "$dest"
   jq -n --arg r "$region" --arg l "$language" --arg g "$gender" \
@@ -22,6 +22,9 @@ check() {
   grep -q "\"LanguageCode\": \"__TTS_LANGUAGE_CODE__\"" "$dest/flows/nova-sonic-base.json" || fail "$region/$language/$gender: flow does not set contact LanguageCode"
 
   grep -q "localeId: '$locale'" "$dest/lib/lex-bot-stack.ts" || fail "$region/$language/$gender: Lex localeId $locale"
+  # The bot locale must carry the Nova 2 Sonic S2S voice (lowercase); it is
+  # authoritative for the caller-facing voice during the bot session.
+  grep -q "voiceId: '$sonicVoice'" "$dest/lib/lex-bot-stack.ts" || fail "$region/$language/$gender: Sonic voiceId $sonicVoice"
   grep -q "locale: '$locale'" "$dest/lib/wisdom-stack.ts" || fail "$region/$language/$gender: agent locale $locale"
   # Prompts must instruct the agent to respond in the configured language.
   local plang; case "$language" in de) plang="German";; *) plang="English";; esac
@@ -52,10 +55,10 @@ check() {
   echo "ok: $region / $language / $gender -> $voice $locale $tts ${modelPrefix}*"
 }
 
-check us-east-1    en feminine  Joanna  en_US en-US "us."
-check us-east-1    en masculine Matthew en_US en-US "us."
-check us-east-1    de feminine  Vicki   de_DE de-DE "us."
-check eu-central-1 de masculine Daniel  de_DE de-DE "eu."
-check eu-central-1 en feminine  Joanna  en_US en-US "eu."
+check us-east-1    en feminine  Tiffany tiffany en_US en-US "us."
+check us-east-1    en masculine Matthew matthew en_US en-US "us."
+check us-east-1    de feminine  Vicki   tina    de_DE de-DE "us."
+check eu-central-1 de masculine Lennart lennart de_DE de-DE "eu."
+check eu-central-1 en feminine  Tiffany tiffany en_US en-US "eu."
 
 echo "PASS: region-language-voice matrix"

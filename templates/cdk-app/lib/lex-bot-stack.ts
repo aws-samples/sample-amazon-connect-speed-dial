@@ -65,6 +65,31 @@ export class LexBotStack extends BlueprintStack {
       botLocales: [{
         localeId: '{{lexLocaleId}}',
         nluConfidenceThreshold: 0.4,
+        // Nova 2 Sonic speech-to-speech on the bot locale: one unified model
+        // handles speech understanding AND generation (prosody-aware, native
+        // barge-in), replacing the default ASR + downstream-TTS pipeline.
+        // The model ARN is region-derived (same account-less Bedrock
+        // foundation-model ARN in every supported region). The voiceId is the
+        // lowercase Nova voice (e.g. tina, matthew) and is authoritative for
+        // the caller-facing voice during the bot session — it takes priority
+        // over the flow's Set-voice block and over the legacy
+        // x-amz-lex:audio:speaker-model-voice-override session attribute.
+        // The flow's Set-voice block still governs TTS prompts played outside
+        // the bot session (goodbye/error/consent messages).
+        unifiedSpeechSettings: {
+          speechFoundationModel: {
+            modelArn: cdk.Arn.format({
+              partition: this.partition,
+              service: 'bedrock',
+              region: this.region,
+              account: '',
+              resource: 'foundation-model',
+              resourceName: 'amazon.nova-2-sonic-v1:0',
+              arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+            }),
+            voiceId: '{{sonicVoiceId}}',
+          },
+        },
         intents: [
           // AMAZON.QInConnectIntent — the primary intent that enables AI Agent self-service.
           // Routes all utterances to Q-in-Connect for orchestration via Nova Sonic.
