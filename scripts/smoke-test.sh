@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REGION="${5:-us-east-1}"
+PROJECT_DIR="${6:-}"
 
 # Color codes
 RED='\033[0;31m'
@@ -10,8 +11,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Usage check
-if [[ $# -lt 4 || $# -gt 5 ]]; then
-  echo "Usage: $0 <instance-id> <flow-id> <assistant-id> <ai-agent-id> [region]" >&2
+if [[ $# -lt 4 || $# -gt 6 ]]; then
+  echo "Usage: $0 <instance-id> <flow-id> <assistant-id> <ai-agent-id> [region] [project-dir]" >&2
+  echo "  project-dir: rendered project containing cdk-outputs.json — enables the" >&2
+  echo "  conditional contact-events and knowledge-base checks (skipped if omitted)." >&2
   exit 1
 fi
 
@@ -101,6 +104,56 @@ if [[ -n "$PHONE_NUMBER" ]] && [[ "$PHONE_NUMBER" != "None" ]]; then
 else
   warn "No UK DID associated with flow (skip claim-uk-did.sh? — claim manually to receive calls)"
   PHONE_NUMBER="(none — no DID associated)"
+fi
+
+# 5. Conditional feature checks — driven by which stacks emitted outputs.
+# cdk-outputs.json contains a per-stack key only when that stack was deployed,
+# so key presence doubles as the feature flag (no extra arguments needed).
+if [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/cdk-outputs.json" ]]; then
+  OUTPUTS="$PROJECT_DIR/cdk-outputs.json"
+
+  # 5a. Contact events: the EventBridge rule must exist and be ENABLED.
+  CE_RULE_ARN=$(jq -r 'to_entries[] | select(.key | endswith("-ContactEvents")) | .value.RuleArn // empty' "$OUTPUTS" | head -n1)
+  if [[ -n "$CE_RULE_ARN" ]]; then
+    info "Checking contact-events EventBridge rule..."
+    CE_RULE_NAME="${CE_RULE_ARN##*/}"
+    CE_STATE=$(aws events describe-rule       --name "$CE_RULE_NAME"       --region "$REGION"       --query 'State'       --output text 2>/dev/null || echo "ERROR")
+    if [[ "$CE_STATE" == "ENABLED" ]]; then
+      ok "Contact-events rule is ENABLED ($CE_RULE_NAME)"
+    else
+      fail "Contact-events rule state: $CE_STATE (expected ENABLED)"
+    fi
+  fi
+
+  # 5b. Identity Center SSO: the instance must actually be SAML-managed.
+  # (The identity type is immutable — if this mismatches, the instance must be
+  # recreated, so surface it loudly.)
+  EXPECTED_IDM=$(jq -r 'to_entries[] | select(.key | endswith("-ConnectInstance")) | .value.IdentityManagementType // empty' "$OUTPUTS" | head -n1)
+  if [[ "$EXPECTED_IDM" == "SAML" ]]; then
+    info "Checking instance identity management type..."
+    ACTUAL_IDM=$(aws connect describe-instance       --instance-id "$INSTANCE_ID"       --region "$REGION"       --query 'Instance.IdentityManagementType'       --output text 2>/dev/null || echo "ERROR")
+    if [[ "$ACTUAL_IDM" == "SAML" ]]; then
+      ok "Instance uses SAML identity management (Identity Center SSO)"
+    else
+      fail "Instance identity management type: $ACTUAL_IDM (expected SAML — the type is immutable; recreating the instance is the only fix)"
+    fi
+  fi
+
+  # 5c. Knowledge base: the Bedrock KB must be ACTIVE.
+  KB_ID=$(jq -r 'to_entries[] | select(.key | endswith("-Wisdom")) | .value.BedrockKnowledgeBaseId // empty' "$OUTPUTS" | head -n1)
+  if [[ -n "$KB_ID" ]]; then
+    info "Checking Bedrock knowledge base status..."
+    KB_STATUS=$(aws bedrock-agent get-knowledge-base       --knowledge-base-id "$KB_ID"       --region "$REGION"       --query 'knowledgeBase.status'       --output text 2>/dev/null || echo "ERROR")
+    if [[ "$KB_STATUS" == "ACTIVE" ]]; then
+      ok "Bedrock knowledge base is ACTIVE ($KB_ID)"
+    else
+      fail "Bedrock knowledge base status: $KB_STATUS (expected ACTIVE)"
+    fi
+  fi
+elif [[ -n "$PROJECT_DIR" ]]; then
+  warn "cdk-outputs.json not found in $PROJECT_DIR — skipping contact-events/knowledge-base checks"
+else
+  warn "no project-dir argument — skipping contact-events/knowledge-base checks"
 fi
 
 # Exit if any checks failed

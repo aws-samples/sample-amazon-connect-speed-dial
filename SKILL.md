@@ -122,8 +122,9 @@ These files are the source of truth and survive re-renders. If the user keeps th
 
 Future items (for transparency only):
 - **Model tier**: Balanced (Haiku orchestration + Nova Pro answers) / Fast / Best
-- **Knowledge base**: Empty for now / From a website / From an S3 path
 - **Voice & persona**: Tiffany (warm & concise) / other Nova Sonic voices
+
+(The knowledge base is no longer a future item — it is selectable under Sides below.)
 
 ### Sides — Add-on capabilities [Multi-select]
 
@@ -135,6 +136,9 @@ Options (only these five are selectable in this phase):
 - **Pre-call context injection** [Ready] — a Lambda runs in the flow before the agent starts and pushes caller context into the Q Connect session, so the agent knows who it's talking to from the first turn. The blueprint injects tool-aligned demo context (a known customer `CUST001` / order `ORD-12345` matching the gateway's sample tools); when enabled, the orchestration prompt also gains an instruction to use that context and the lookup tools. Real deployments replace the demo data in `lambda/flow/update-session-context/index.py` with actual lookups.
 - **Customer Profiles** [Ready, default ON] — seed a demo customer profile (Alice Johnson / `CUST001`, matching the context/tool persona) and look the caller up in the flow, surfacing the profile to the agent via `{{$.Custom.*}}`. Looks up by caller phone, then the web widget's `customerId` attribute, then a static demo phone fallback so it resolves on web-call / fresh-DID too. Defaults to **on** (the domain is already created by the instance). See "Customer Profiles" notes below for the native-block vs. Lambda decision.
 - **Call recording** [Ready] — the flow opens with a DTMF consent gate (press 1 to allow, 2 to decline); on consent the call is recorded (Agent + Customer) to the instance's `CALL_RECORDINGS` S3 storage. Off by default, since whether to record is a per-deployment privacy/compliance decision.
+- **Analytics data lake** [Ready] — enables the Connect analytics data lake, sharing contact records, contact flow events, agent statistics, and contact statistics to a Glue database via Lake Formation. Queryable with Athena. Off by default.
+- **Contact-events logging** [Ready] — deploys an EventBridge rule + Lambda that logs contact lifecycle events (all DISCONNECTED events on the instance, any channel) as structured CloudWatch data. Off by default.
+- **Knowledge base (RAG)** [Ready] — deploys a Bedrock Managed Knowledge Base (S3 Vectors store + S3 data-source bucket) wired to the Q-in-Connect assistant; the self-service agent retrieves from it to ground answers. Off by default. **When selected, ask one follow-up:** "Where should the knowledge-base content come from? (a) the bundled sample document (a demo return policy), (b) a local folder you provide, (c) leave it empty for now — populate later." Remember the choice and path for the post-deploy population step (they are NOT part of the order file; population is a script action, not a template value).
 
 Future options (visible, NOT selectable):
 - **Guardrails** [Coming soon] — content-safety filters
@@ -146,6 +150,9 @@ Store selections in order object as:
 - `contextInjectionEnabled` (boolean): `true` if Pre-call context injection selected, `false` otherwise
 - `customerProfilesEnabled` (boolean): `true` if Customer Profiles selected. **Defaults to `true`** in `build-values.sh` when omitted (like `encryptionEnabled`).
 - `recordingEnabled` (boolean): `true` if Call recording selected, `false` otherwise
+- `dataLakeEnabled` (boolean): `true` if Analytics data lake selected, `false` otherwise
+- `contactEventsEnabled` (boolean): `true` if Contact-events logging selected, `false` otherwise
+- `knowledgeBaseEnabled` (boolean): `true` if Knowledge base selected, `false` otherwise
 
 ### Drinks — Reach & operate
 
@@ -189,6 +196,31 @@ Default: `Yes` (accept default in express mode).
 
 Note: `encryptionEnabled` defaults to **true** in `build-values.sh` if omitted (secure by default), unlike the add-on capability flags which default false. The Connect storage `encryptionConfig` only supports SSE_KMS, which is why enabling it creates a key. The key's removal policy follows `retainConnectInstance`. The key is created with **automatic annual key rotation enabled** (`enableKeyRotation: true` in `connect-instance-stack.ts`), following AWS best practice for customer-managed keys.
 
+Then ask: "How should agents and admins sign in to Connect? (a) Connect-managed users (default) — usernames/passwords managed inside Connect, (b) IAM Identity Center SSO — sign in through your organization's Identity Center."
+
+Default: `(a) Connect-managed` (accept default in express mode).
+
+> ⚠️ **This choice is IRREVERSIBLE.** The identity management type is fixed at instance
+> creation and can never be changed — switching later means destroying and recreating the
+> entire Connect instance (losing users, claimed numbers, and configuration). Make sure the
+> user understands this before proceeding.
+
+- **(a) Connect-managed** — store `identityCenterEnabled: false` (default when omitted).
+- **(b) Identity Center SSO** — store `identityCenterEnabled: true`, and immediately tell
+  the user about the **mandatory manual step** that must be completed BEFORE deployment:
+
+  1. Open the **IAM Identity Center** console → **Applications** → **Add application** →
+     add the **Amazon Connect** catalog application (or a custom SAML 2.0 app)
+  2. Download the **IAM Identity Center SAML metadata file** for that application
+  3. Save it as **`saml-metadata.xml`** in the current working directory (next to
+     `.connect-skill-order.json`)
+
+  The CDK synth creates the IAM SAML Provider from this file and **fails without it** —
+  preflight (Phase 2) verifies the file exists before any deploy is attempted. The user can
+  complete this step now or before Phase 2; do not proceed past preflight until it's there.
+  If Identity Center lives in a different account (e.g. the org management account), that's
+  fine — the SAML flow is browser-based and needs no cross-account IAM trust.
+
 ### The Check — Order confirmation
 
 After gathering all inputs, display a summary of the user's selections:
@@ -199,6 +231,10 @@ Your order:
   Company:      <companyName>
   Greeting:     <greeting>
   Sides:        [Human transfer] [Tool calling] (or "None" if both false)
+  Data lake:    [Enabled] / [Disabled]
+  Events log:   [Enabled] / [Disabled]
+  Knowledge:    [Sample data] / [Own content: <path>] / [Empty] / [Disabled]
+  Sign-in:      [Connect-managed] / [Identity Center SSO — irreversible]
   Reach:        [UK phone number] / [Web-call frontend] / [Manual]
   Region:       <us-east-1 | eu-central-1>
   Language:     <English | German>  Voice: <Feminine | Masculine>
@@ -246,7 +282,10 @@ After the user confirms the order, create two files:
   "customerProfilesEnabled": <boolean>,
   "recordingEnabled": <boolean>,
   "encryptionEnabled": <boolean>,
-  "frontendEnabled": <boolean>
+  "frontendEnabled": <boolean>,
+  "contactEventsEnabled": <boolean>,
+  "knowledgeBaseEnabled": <boolean>,
+  "identityCenterEnabled": <boolean>
 }
 ```
 
@@ -265,7 +304,8 @@ The writer script:
 - Applies defaults for missing order keys (`companyName`, `greeting`, etc.)
 - Type-checks boolean flags (`transferEnabled`, `toolEnabled`, `frontendEnabled`)
 - Escapes free text (`greeting`, `companyName`) for JSON and TypeScript string contexts
-- Derives the Bedrock model IDs from `region` (`us.*` in Virginia, `eu.*` in Frankfurt) and the
+- Derives the Bedrock model IDs (including the KB parsing model) from `region` (`us.*` in
+  Virginia, `eu.*` in Frankfurt) and the
   Lex locale / TTS language / Polly voice from `language` + `voiceGender`. `region` **is** emitted
   to the values file so `render-templates.sh` can hardcode it into `bin/connect-blueprint.ts`
   (pinning the deploy region); it also drives `CDK_DEFAULT_REGION`/`AWS_REGION` and the helper
@@ -279,8 +319,11 @@ The `claimUkDid` boolean is **not** stored in either JSON file — it controls s
 Run preflight checks to validate the environment:
 
 ```bash
-<skill-dir>/scripts/preflight.sh <region>
+<skill-dir>/scripts/preflight.sh <region> <cwd>/.connect-skill-order.json
 ```
+
+(The order-file argument is optional but always pass it — it enables the Identity Center
+prerequisite gate when `identityCenterEnabled` is true.)
 
 The preflight script checks:
 - AWS credentials configured
@@ -289,10 +332,18 @@ The preflight script checks:
 - Bedrock model access in the target region (us-east-1: amazon.nova-2-sonic-v1:0; eu-central-1:
   amazon.nova-pro-v1:0 — Nova Sonic voice is delivered via Amazon Connect there, not listable in
   Bedrock directly)
+- When `identityCenterEnabled`: `saml-metadata.xml` exists next to the order file and looks
+  like SAML metadata (**hard stop** if missing — the manual Identity Center step from Phase 1
+  must be completed first, because the identity type is immutable and synth requires the file);
+  plus a soft probe for a visible Identity Center instance (warning only — org instances often
+  live in the management account)
 
 If preflight fails, report the error and stop. Common failures:
 - **Bedrock model not enabled**: User must visit https://console.aws.amazon.com/bedrock/home?region=us-east-1#/modelaccess and enable amazon.nova-2-sonic-v1:0
 - **CDK bootstrap fails**: User needs IAM permissions (see references/troubleshooting.md)
+- **saml-metadata.xml missing**: The user has not finished the manual Identity Center
+  application step — repeat the three-step instruction from Phase 1 (Digestif) and re-run
+  preflight once the file is in place
 
 ## Phase 3: Render Templates
 
@@ -307,6 +358,9 @@ Render the CDK app from templates:
 
 This script:
 - Copies all files from `templates/cdk-app` to `<cwd>/<projectName>`
+- Carries `saml-metadata.xml` from the working dir into the rendered project root when present
+  (Identity Center deployments — `connect-instance-stack.ts` reads it at synth time; the
+  working-dir copy is the source of truth and survives re-renders, like custom prompts)
 - Replaces all `{{key}}` placeholders with values from the JSON file
 - Validates no unsubstituted placeholders remain
 
@@ -338,7 +392,7 @@ The rendered project structure:
 
 **Capability composition:** The contact flow is built from the base flow (`flows/nova-sonic-base.json`) with optional branches added by pure transforms in `flow-compose.ts` per the flags in `config.ts`: `transferEnabled` routes the agent's Escalate outcome to a human queue; `contextInjectionEnabled` and `customerProfilesEnabled` each insert a Lambda invocation (`provide-agent-context` / `provide-profile-context`) into a shared "precall" sequence — a standalone `CreateWisdomSession`+`UpdateContactData` runs first (so the Lambdas' DescribeContact lookup has a bound session), the Lambdas run, then the intact AI Agent compound block runs. `recordingEnabled` prepends a DTMF consent gate as the flow's entry point. The precall scaffolding (`ensurePrecallSession`/`insertPrecallLambda` in `flow-compose.ts`) is shared so context-injection and customer-profiles compose order-independently and never split the AI Agent compound. This replaces the old three-flavor approach (qa / transfer / tool) with independent, composable capabilities.
 
-**Customer Profiles:** The blueprint always creates a Customer Profiles domain on the instance. When `customerProfilesEnabled` (default on), it additionally (a) seeds one demo profile (Alice Johnson / `CUST001` / `+15550100123`, custom attrs `accountTier`, `recentOrderId`) via a `CreateProfile` custom resource in `connect-instance-stack.ts`, and (b) deploys a `profile-lookup` Lambda that `SearchProfiles` (by `_phone`, then the web `customerId` as `_account`, then the static demo phone) and bridges the result into the Q Connect session via `UpdateSessionData(namespace="Custom")` — the agent then reads it as `{{$.Custom.*}}`. **Design note / divergence:** rather than the native Customer Profiles flow block, the lookup is implemented as a `SearchProfiles` call in the `profile-lookup` Lambda. The native block's contact-flow-language `Type` string isn't documented (the docs page renders empty) and would have to be captured from a console-built flow via `DescribeContactFlow`; the Lambda approach preserves the same behavior (profile resolved into the agent identically) and the native block is deferred. The web frontend already passes `customerId` in the widget JWT (surfaces as `$.Attributes.customerId`), which the lookup uses, so the WebRTC channel is covered. **User-facing guide** (how it works, how to create a profile for a Cognito user, and how it overlaps with context injection): `references/customer-profiles.md`.
+**Customer Profiles:** The blueprint always creates a Customer Profiles domain on the instance. When `customerProfilesEnabled` (default on), it additionally (a) seeds one demo profile (Alice Johnson / `CUST001` / `+15550100123`, custom attrs `accountTier`, `recentOrderId`) via a `CreateProfile` custom resource in `connect-instance-stack.ts`, and (b) deploys a `profile-lookup` Lambda that `SearchProfiles` (by `_phone`, then the web `customerId` as `_account`, then the static demo phone) and bridges the result into the Q Connect session via `UpdateSessionData(namespace="Custom")` — the agent then reads it as `{{$.Custom.*}}`. **Design note / divergence:** the user asked for the *native* Customer Profiles flow block. The block's contact-flow-language `Type` string could not be verified from docs (the page renders empty) and must be captured from a console-built flow via `DescribeContactFlow`; since that needed a console session, the lookup is implemented as a `SearchProfiles` call in the Lambda instead (intent preserved — profile resolved into the agent the same way; native block deferred). The web frontend already passes `customerId` in the widget JWT (surfaces as `$.Attributes.customerId`), which the lookup uses, so the WebRTC channel is covered. **User-facing guide** (how it works, how to create a profile for a Cognito user, and how it overlaps with context injection): `references/customer-profiles.md`.
 
 **Call recording (opt-in, `recordingEnabled`):** When enabled, `applyRecordingConsent` (in `flow-compose.ts`) prepends a DTMF consent gate — a `GetParticipantInput` block (`recording-consent`) becomes the flow's `StartAction`, asking the caller to press 1 to allow recording or 2 to decline. Press 1 → `enable-recording`; press 2 / timeout / no-match → `disable-recording`; both converge on the flow's original start (`enable-logs`) so the rest of the flow is unchanged. Recording uses `UpdateContactRecordingAndAnalyticsBehavior`; the enable path records `Agent` + `Customer` with **`IVRRecordingBehavior: Enabled`** — that IVR/automated-interaction setting is required for audio to be captured in this AI-agent (automated) flow, and recordings land in the instance's `CALL_RECORDINGS` S3 storage (configured in `connect-instance-stack.ts`). The consent prompt's company name is rendered from `{{companyName}}` via the `__COMPANY_NAME__` placeholder, mirroring the greeting. The gate sits entirely upstream of the AI Agent compound block and the context-injection actions, so it composes independently.
 
@@ -429,6 +483,99 @@ Common errors:
 - **IAM permission denied**: User needs IAM permissions to create Connect resources.
 - **Bedrock model access denied**: Ensure Nova Sonic 2, Claude Haiku 4.5, and Nova Pro are enabled in the Bedrock console (us-east-1).
 
+### Populate the knowledge base (only when `knowledgeBaseEnabled`)
+
+The knowledge base deploys **empty** — retrieval returns nothing until content is
+ingested. Based on the user's Phase 1 choice:
+
+- **(a) Sample data** — run the sync script with no content argument; it uploads the
+  skill's bundled `sample-data/` folder (demo return policy):
+
+```bash
+<skill-dir>/scripts/sync-kb.sh <project-dir> "" <region>
+```
+
+  (An empty second argument or omitting it selects the bundled sample data.)
+
+- **(b) Own content** — pass the user's folder or file:
+
+```bash
+<skill-dir>/scripts/sync-kb.sh <project-dir> <content-path> <region>
+```
+
+- **(c) Empty for now** — skip this step; tell the user they can populate later by
+  running the same script at any time.
+
+The script resolves the KB bucket / knowledge-base ID / data-source ID from the
+project's `cdk-outputs.json`, uploads the content to S3, starts a Bedrock ingestion
+job, and polls until it completes, reporting scanned/indexed/failed document counts.
+It is idempotent — re-run it whenever content changes.
+
+### Complete Identity Center SSO setup (only when `identityCenterEnabled`)
+
+The deploy created the instance with SAML identity plus the IAM SAML Provider and
+Federation Role — but sign-in will not work until the Identity Center application is
+finished by hand. Walk the user through it with **concrete values from the ConnectInstance
+stack outputs** (`SamlRelayStateUrl`, `SamlProviderArn`, `SamlFederationRoleArn`):
+
+1. **Application properties** (Identity Center → your Connect app): set the **Relay state**
+   to the `SamlRelayStateUrl` output. Application ACS URL: `https://signin.aws.amazon.com/saml`,
+   SAML audience: `urn:amazon:webservices`.
+2. **Attribute mappings** — ⚠️ **mandatory; the single most common failure is skipping these.**
+   A freshly-added catalog app has **no** mappings by default, and without the `Role` attribute
+   the sign-in fails with **"Your request included an invalid SAML response"** — which looks like
+   a metadata/cert problem but is not (the auto-created SAML provider + federation role are fine;
+   the assertion simply carries no role). Tell the user to add all three rows under
+   Identity Center → the app → **Actions → Edit attribute mappings**:
+
+   | Attribute | Value | Format |
+   |-----------|-------|--------|
+   | `Subject` | `${user:email}` | `emailAddress` |
+   | `https://aws.amazon.com/SAML/Attributes/RoleSessionName` | `${user:email}` | `unspecified` |
+   | `https://aws.amazon.com/SAML/Attributes/Role` | `<SamlFederationRoleArn>,<SamlProviderArn>` | `unspecified` |
+
+   `Subject` usually already exists — ensure its format is `emailAddress`. Fill in the two ARNs
+   from the outputs as a comma-separated pair, **`SamlFederationRoleArn` first**, **no space after
+   the comma**.
+3. **Assign users/groups** to the application in Identity Center (grants the app tile only).
+4. **Create matching Connect users** — the **Login must be exactly the user's Identity Center
+   email** (Connect matches the assertion on the email, not the IDC username; a username-based
+   login yields "not been onboarded"). Offer to do this via the CLI instead of the console. First
+   discover the profile IDs (`aws connect list-security-profiles` / `list-routing-profiles
+   --instance-id <id> --region <region>` — the blueprint ships an `Admin` profile and a
+   `<prefix>-default-routing-profile`), then:
+
+   ```bash
+   aws connect create-user --instance-id <instance-id> --region <region> \
+     --username '<user-email>' \
+     --identity-info FirstName=<First>,LastName=<Last> \
+     --phone-config PhoneType=SOFT_PHONE,AutoAccept=false,AfterContactWorkTimeLimit=0 \
+     --security-profile-ids <security-profile-id> \
+     --routing-profile-id <routing-profile-id>
+   ```
+
+   ⚠️ On a SAML instance **do not pass `Email=` inside `--identity-info`** — `create-user` rejects
+   it with `InvalidRequestException: Email is not required for this directory type`. The email
+   lives in `--username` only (that becomes the Login); there is no password on SAML instances.
+5. **Where to sign in / test**: users sign in at the **IAM Identity Center access portal**
+   (`https://<directory-id-or-subdomain>.awsapps.com/start`; exact URL under IAM Identity Center
+   → Settings → "AWS access portal URL"), **not** the Connect console and **not** with a Connect
+   password. They click the Connect app tile and land in the agent workspace. Note these SSO
+   logins are **staff** logins, entirely separate from any web-call frontend (Cognito) login.
+
+Note: Identity Center often lives in a **different account** (org management), so the app config
+and attribute mappings must be edited there — they're not visible from the Connect account's
+credentials, and `sso-admin list-applications` will `AccessDenied` cross-account. That's expected;
+the SAML flow is browser-based and needs no cross-account IAM trust.
+
+Troubleshooting (full walkthrough + table in `references/identity-center-sso.md`): **"invalid
+SAML response"** → attribute mappings missing/malformed (add all three, `Role` = role
+ARN,provider ARN with no space); "not onboarded to this application" → Connect login doesn't
+exactly match the email; 404 after clicking the app → Relay State must be the `SamlRelayStateUrl`
+value (instance UUID, not the full ARN); GetFederationToken denied → role policy/instance
+mismatch; `create-user` "Email is not required for this directory type" → drop `Email=` from
+`--identity-info`.
+
 ## Phase 5: Claim UK DID (optional)
 
 If `claimUkDid` is `false`, **skip this phase entirely** and tell the user how to attach a number manually (see "Manual phone number" below).
@@ -481,7 +628,8 @@ Run smoke tests to verify the deployment:
   <contact-flow-id> \
   <assistant-id> \
   <ai-agent-id> \
-  <region>
+  <region> \
+  <project-dir>
 ```
 
 The script checks:
@@ -489,6 +637,11 @@ The script checks:
 - Contact flow is PUBLISHED
 - AI Agent is ACTIVE or CREATE_COMPLETE
 - UK DID is associated with the flow
+- When `identityCenterEnabled`: the instance's IdentityManagementType is SAML
+- When `contactEventsEnabled`: the contact-events EventBridge rule exists and is ENABLED
+- When `knowledgeBaseEnabled`: the Bedrock knowledge base is ACTIVE (both discovered
+  from the deployed stacks — pass `<project-dir>` as the 6th argument so the script
+  can read `cdk-outputs.json`; omit it and both checks are skipped with a warning)
 
 Output:
 ```

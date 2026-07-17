@@ -247,7 +247,7 @@ export class WebcallWidgetStack extends BlueprintStack {
     // that re-runs only one of them wipes the other's files). Merging the sources
     // into one deployment means one prune pass over the union, never a conflict.
     const widgetsJson = JSON.stringify(
-      widgets.map((w) => ({ id: w.id, snippetId: w.snippetId, scriptUrl: w.scriptUrl })),
+      widgets.map((w) => ({ id: w.id, snippetId: w.snippetId, scriptUrl: w.scriptUrl, label: w.label || w.id })),
       null, 2,
     );
 

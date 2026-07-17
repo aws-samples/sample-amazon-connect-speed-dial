@@ -17,8 +17,8 @@ export interface ContactEventsStackProps extends cdk.StackProps {
  * Captures Amazon Connect contact lifecycle events via EventBridge and
  * forwards them to a Lambda that logs structured data to CloudWatch.
  *
- * Currently scoped to VOICE contacts that were disconnected on the client side
- * (customer hung up). Extend the event pattern or add additional rules as needed.
+ * Currently scoped to DISCONNECTED events on this instance (any channel).
+ * Extend the event pattern or add additional rules as needed.
  */
 export class ContactEventsStack extends BlueprintStack {
   constructor(scope: Construct, id: string, props: ContactEventsStackProps) {
@@ -33,21 +33,23 @@ export class ContactEventsStack extends BlueprintStack {
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       logRetention: logs.RetentionDays.TWO_WEEKS,
-      description: 'Logs client-side disconnect events from Amazon Connect',
+      description: 'Logs disconnect events from Amazon Connect',
     });
 
     // --- EventBridge rule ---
+    // Amazon Connect publishes contact lifecycle events to the default bus
+    // automatically. The detail-type is "Amazon Connect Contact Event" and the
+    // channel value uses mixed case ("Voice", "Chat", "Task", "Email").
+    // We match all DISCONNECTED events for this instance regardless of channel.
     const rule = new events.Rule(this, 'ClientDisconnectRule', {
       ruleName: this.namer.connect('client-disconnect'),
-      description: 'Matches VOICE contacts disconnected by the customer',
+      description: 'Matches contacts disconnected on this Connect instance',
       eventPattern: {
         source: ['aws.connect'],
         detailType: ['Amazon Connect Contact Event'],
         detail: {
           instanceArn: [props.connectInstanceArn],
-          channel: ['VOICE'],
           eventType: ['DISCONNECTED'],
-          disconnectReason: ['CUSTOMER_DISCONNECT'],
         },
       },
     });

@@ -21,10 +21,10 @@ check() {
   # de_DE-only bot returns ResourceNotFoundException at runtime.
   grep -q "\"LanguageCode\": \"__TTS_LANGUAGE_CODE__\"" "$dest/flows/nova-sonic-base.json" || fail "$region/$language/$gender: flow does not set contact LanguageCode"
 
-  grep -q "localeId: '$locale'" "$dest/lib/lex-bot-stack.ts" || fail "$region/$language/$gender: Lex localeId $locale"
+  grep -q "localeId: '$locale'" "$dest/lib/wisdom-stack.ts" || fail "$region/$language/$gender: Lex localeId $locale"
   # The bot locale must carry the Nova 2 Sonic S2S voice (lowercase); it is
   # authoritative for the caller-facing voice during the bot session.
-  grep -q "voiceId: '$sonicVoice'" "$dest/lib/lex-bot-stack.ts" || fail "$region/$language/$gender: Sonic voiceId $sonicVoice"
+  grep -q "voiceId: '$sonicVoice'" "$dest/lib/wisdom-stack.ts" || fail "$region/$language/$gender: Sonic voiceId $sonicVoice"
   grep -q "locale: '$locale'" "$dest/lib/wisdom-stack.ts" || fail "$region/$language/$gender: agent locale $locale"
   # Prompts must instruct the agent to respond in the configured language.
   local plang; case "$language" in de) plang="German";; *) plang="English";; esac

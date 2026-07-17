@@ -26,6 +26,15 @@ if [[ -d "$WORK_DIR/prompts" ]]; then
   done
 fi
 
+# Identity Center: when the working dir holds a saml-metadata.xml (downloaded
+# from the Identity Center console per the skill's SSO gate), carry it into the
+# rendered project root — connect-instance-stack.ts reads it at synth time to
+# create the IAM SAML Provider. Same working-dir convention as custom prompts,
+# so it survives re-renders.
+if [[ -f "$WORK_DIR/saml-metadata.xml" ]]; then
+  cp "$WORK_DIR/saml-metadata.xml" "$DEST_DIR/saml-metadata.xml"
+fi
+
 # When context injection OR customer profiles is enabled, append the
 # context-usage instruction to the orchestration prompt's `system:` block (just
 # before the `messages:` line) so the agent uses the {{$.Custom.*}} caller
@@ -60,6 +69,31 @@ find "$DEST_DIR" -type f \( -name '*.ts' -o -name '*.json' -o -name '*.md' -o -n
     sed -i.bak "$SED_EXPR" "$f"
     rm -f "$f.bak"
   done
+
+# --- Patch connectWidgets from the values file ---
+# The sed-based substitution above only handles scalar values. The connectWidgets
+# array is a JSON structure that can't be safely substituted via sed. Instead,
+# read it from the values file and patch it into the rendered config.ts directly.
+WIDGETS_JSON="$(jq -c '.connectWidgets // []' "$VALUES_FILE")"
+if [[ "$WIDGETS_JSON" != "[]" ]]; then
+  CONFIG_TS="$DEST_DIR/lib/config.ts"
+  if [[ -f "$CONFIG_TS" ]]; then
+    # Pass the JSON via stdin to node to avoid shell interpolation risks
+    echo "$WIDGETS_JSON" | node -e "
+      const fs = require('fs');
+      const configPath = process.argv[1];
+      const config = fs.readFileSync(configPath, 'utf8');
+      let input = '';
+      process.stdin.on('data', (d) => { input += d; });
+      process.stdin.on('end', () => {
+        const widgets = JSON.parse(input);
+        const formatted = JSON.stringify(widgets, null, 2).replace(/^/gm, '  ').trimStart();
+        const patched = config.replace(/connectWidgets:\s*\[\]/, 'connectWidgets: ' + formatted);
+        fs.writeFileSync(configPath, patched);
+      });
+    " "$CONFIG_TS"
+  fi
+fi
 
 if grep -r --include='*.ts' --include='*.json' --include='*.md' \
   --exclude-dir=node_modules --exclude-dir=cdk.out \

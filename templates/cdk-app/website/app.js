@@ -140,6 +140,7 @@ function displayAuthenticatedUI(username) {
   document.getElementById('password-change-form').style.display = 'none';
   document.getElementById('authenticated-content').style.display = 'flex';
   document.getElementById('username-display').textContent = username;
+  initializeWidgetSelector();
   initializeConnectWidget();
 }
 
@@ -164,8 +165,62 @@ function logout() {
 }
 
 /**
- * Connect Widget — loads the first configured widget by default
+ * Connect Widget — multi-widget selector via ?widget=<index|id> URL param.
+ * Supports switching between different widget configurations for testing.
  */
+function getActiveWidgetIndex() {
+  var cfg = window.cognitoConfig;
+  if (!cfg || !cfg.widgets || cfg.widgets.length === 0) return -1;
+
+  var params = new URLSearchParams(window.location.search);
+  var widgetParam = params.get('widget');
+
+  if (!widgetParam) return 0; // default to first widget
+
+  // Try numeric index first
+  var idx = parseInt(widgetParam, 10);
+  if (!isNaN(idx) && idx >= 0 && idx < cfg.widgets.length) return idx;
+
+  // Try matching by widget ID
+  for (var i = 0; i < cfg.widgets.length; i++) {
+    if (cfg.widgets[i].id === widgetParam) return i;
+  }
+
+  return 0; // fallback to first
+}
+
+function initializeWidgetSelector() {
+  var cfg = window.cognitoConfig;
+  var selector = document.getElementById('mode-selector');
+  if (!cfg || !cfg.widgets || cfg.widgets.length <= 1) {
+    // Only one or no widgets — hide selector
+    if (selector) selector.style.display = 'none';
+    return;
+  }
+
+  // Show selector with a button per widget
+  if (selector) {
+    selector.style.display = 'flex';
+    selector.innerHTML = '';
+
+    var activeIdx = getActiveWidgetIndex();
+
+    cfg.widgets.forEach(function(widget, idx) {
+      var btn = document.createElement('button');
+      btn.className = 'mode-button' + (idx === activeIdx ? ' active' : '');
+      btn.textContent = widget.label || ('Widget ' + (idx + 1));
+      btn.addEventListener('click', function() {
+        if (idx !== activeIdx) {
+          var params = new URLSearchParams(window.location.search);
+          params.set('widget', String(idx));
+          window.location.search = params.toString();
+        }
+      });
+      selector.appendChild(btn);
+    });
+  }
+}
+
 function initializeConnectWidget() {
   if (window.connectWidgetInitialized) {
     showConnectWidget();
@@ -175,18 +230,32 @@ function initializeConnectWidget() {
   var cfg = window.cognitoConfig;
   if (!cfg || !cfg.widgets || cfg.widgets.length === 0) {
     console.error('No Connect widgets configured in config.js');
+    var statusEl = document.getElementById('widget-status');
+    if (statusEl) statusEl.textContent = 'No widgets configured. Run scripts/setup-widget.sh to add one.';
     return;
   }
 
-  // Use the first widget by default
-  var widget = cfg.widgets[0];
+  var idx = getActiveWidgetIndex();
+  var widget = cfg.widgets[idx];
+
+  if (!widget) {
+    console.error('Widget not found at index: ' + idx);
+    return;
+  }
+
+  // Update status text
+  var statusEl = document.getElementById('widget-status');
+  if (statusEl) {
+    var label = widget.label || ('Widget ' + (idx + 1));
+    statusEl.textContent = 'Active widget: ' + label + '. It will appear in the bottom-right corner.';
+  }
 
   window.amazon_connect = window.amazon_connect || function() {
     (window.amazon_connect.ac = window.amazon_connect.ac || []).push(arguments);
   };
 
   amazon_connect('styles', {
-    iconType: 'VOICE',
+    iconType: 'CHAT',
     openChat: { color: '#ffffff', backgroundColor: '#123456' },
     closeChat: { color: '#ffffff', backgroundColor: '#123456' },
   });

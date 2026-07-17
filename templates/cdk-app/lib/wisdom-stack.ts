@@ -1,6 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
 import * as connect from 'aws-cdk-lib/aws-connect';
 import * as wisdom from 'aws-cdk-lib/aws-wisdom';
+import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as s3vectors from 'aws-cdk-lib/aws-s3vectors';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lex from 'aws-cdk-lib/aws-lex';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as fs from 'fs';
@@ -60,6 +65,7 @@ export class WisdomStack extends BlueprintStack {
   public readonly orchestrationAgentArn: string;
   public readonly selfServiceAgentId: string;
   public readonly knowledgeBaseArn: string;
+  public readonly botAliasArn: string;
 
   constructor(scope: Construct, id: string, props: WisdomStackProps) {
     super(scope, id, props);
@@ -82,6 +88,252 @@ export class WisdomStack extends BlueprintStack {
       association: { knowledgeBaseId: kb.attrKnowledgeBaseId },
       associationType: 'KNOWLEDGE_BASE',
     });
+
+    // --- Bedrock Managed Knowledge Base (optional, gated by knowledgeBaseEnabled) ---
+    // Creates a Bedrock KB with S3 data source and associates it with the
+    // assistant as an EXTERNAL_BEDROCK_KNOWLEDGE_BASE. This gives the Retrieve
+    // tool access to indexed documents from S3.
+    let bedrockKbAssociation: wisdom.CfnAssistantAssociation | undefined;
+
+    if (config.knowledgeBaseEnabled) {
+      // Dedicated S3 bucket for knowledge-base source documents. Kept separate
+      // from the Connect storage bucket so the KB's documents aren't subject to
+      // the storage bucket's Glacier lifecycle (which would make them unreadable
+      // for re-ingestion) and so encryption stays S3-managed (no customer KMS
+      // key — Bedrock reads objects without needing kms:Decrypt grants).
+      const kbBucket = new s3.Bucket(this, 'KnowledgeBaseBucket', {
+        bucketNamePrefix: this.namer.connect('kb-docs'),
+        bucketNamespace: s3.BucketNamespace.ACCOUNT_REGIONAL,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        enforceSSL: true,
+        versioned: true,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        lifecycleRules: [
+          {
+            id: 'RetainLast3Versions',
+            noncurrentVersionExpiration: cdk.Duration.days(1),
+            noncurrentVersionsToRetain: 3,
+          },
+        ],
+      });
+
+      // Deny uploads using customer-provided encryption keys (SSE-C)
+      kbBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'RestrictSSECObjectUploads',
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:PutObject'],
+        resources: [kbBucket.arnForObjects('*')],
+        conditions: {
+          Null: { 's3:x-amz-server-side-encryption-customer-algorithm': 'false' },
+        },
+      }));
+
+      // S3 Vectors store — CloudFormation does not auto-provision the vector
+      // bucket/index (that is a console "Quick create" convenience), so create
+      // them explicitly. The index dimension (1024), dataType (float32), and the
+      // AMAZON_BEDROCK_* non-filterable metadata keys are the values Bedrock KB
+      // requires for the Titan v2 embedding model.
+      const vectorBucket = new s3vectors.CfnVectorBucket(this, 'KbVectorBucket', {
+        vectorBucketName: this.namer.connect('kb-vectors'),
+      });
+
+      const vectorIndex = new s3vectors.CfnIndex(this, 'KbVectorIndex', {
+        indexName: 'bedrock-kb-index',
+        vectorBucketArn: vectorBucket.attrVectorBucketArn,
+        dataType: 'float32',
+        dimension: 1024,
+        distanceMetric: 'cosine',
+        metadataConfiguration: {
+          nonFilterableMetadataKeys: ['AMAZON_BEDROCK_TEXT', 'AMAZON_BEDROCK_METADATA'],
+        },
+      });
+      vectorIndex.node.addDependency(vectorBucket);
+
+      // IAM role for Bedrock to access S3, invoke the embedding model, and use
+      // the S3 Vectors store.
+      const bedrockKbRole = new iam.Role(this, 'BedrockKbRole', {
+        assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com', {
+          conditions: {
+            StringEquals: { 'aws:SourceAccount': this.account },
+            ArnLike: { 'aws:SourceArn': `arn:aws:bedrock:${this.region}:${this.account}:knowledge-base/*` },
+          },
+        }),
+        description: 'Service role for Bedrock Knowledge Base - embedding model, S3, and S3 Vectors access',
+        inlinePolicies: {
+          BedrockKbPolicy: new iam.PolicyDocument({
+            statements: [
+              new iam.PolicyStatement({
+                sid: 'InvokeEmbeddingModel',
+                actions: ['bedrock:InvokeModel'],
+                resources: [`arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`],
+              }),
+              new iam.PolicyStatement({
+                sid: 'InvokeParsingModel',
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
+                resources: [
+                  `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{kbParsingModelId}}`,
+                ],
+              }),
+              // Cross-region inference profiles route to any region in the
+              // geographic prefix. The target region checks bedrock:InvokeModel
+              // against the foundation-model ARN in THAT region. Rather than
+              // enumerating every possible EU region (new regions get added),
+              // we wildcard the region and scope via condition key so the
+              // permission only applies when invoked through our inference profile.
+              new iam.PolicyStatement({
+                sid: 'InvokeParsingModelCrossRegion',
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                resources: [
+                  `arn:aws:bedrock:*::foundation-model/${'{{kbParsingModelId}}'.replace(/^[a-z]{2}\./, '')}`,
+                ],
+                conditions: {
+                  StringEquals: {
+                    'bedrock:InferenceProfileArn': `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{kbParsingModelId}}`,
+                  },
+                },
+              }),
+              new iam.PolicyStatement({
+                sid: 'ReadS3DataSource',
+                actions: ['s3:GetObject', 's3:ListBucket'],
+                resources: [
+                  kbBucket.bucketArn,
+                  kbBucket.arnForObjects('*'),
+                ],
+              }),
+              new iam.PolicyStatement({
+                sid: 'S3VectorsAccess',
+                actions: [
+                  's3vectors:GetVectorBucket',
+                  's3vectors:GetIndex',
+                  's3vectors:PutVectors',
+                  's3vectors:GetVectors',
+                  's3vectors:QueryVectors',
+                  's3vectors:ListVectors',
+                  's3vectors:DeleteVectors',
+                ],
+                resources: [
+                  vectorBucket.attrVectorBucketArn,
+                  `${vectorBucket.attrVectorBucketArn}/*`,
+                ],
+              }),
+            ],
+          }),
+        },
+      });
+
+      // Bedrock Knowledge Base — uses the S3 Vectors store created above.
+      const bedrockKb = new bedrock.CfnKnowledgeBase(this, 'BedrockKnowledgeBase', {
+        name: this.namer.wisdom('bedrock-kb'),
+        description: 'Bedrock KB with S3 data source for Q in Connect RAG',
+        roleArn: bedrockKbRole.roleArn,
+        knowledgeBaseConfiguration: {
+          type: 'VECTOR',
+          vectorKnowledgeBaseConfiguration: {
+            embeddingModelArn: `arn:aws:bedrock:${this.region}::foundation-model/amazon.titan-embed-text-v2:0`,
+          },
+        },
+        storageConfiguration: {
+          type: 'S3_VECTORS',
+          s3VectorsConfiguration: {
+            indexArn: vectorIndex.attrIndexArn,
+          },
+        },
+      });
+      bedrockKb.node.addDependency(vectorIndex);
+
+      // Foundation-model (LLM) used to parse documents during ingestion. Using
+      // an FM parser extracts structure/tables/images from PDFs and complex docs
+      // far better than the default text parser. The model id is a cross-region
+      // inference profile (eu.* / us.*), so it must be referenced by its
+      // inference-profile ARN.
+      const parsingModelArn = `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{kbParsingModelId}}`;
+
+      // S3 data source pointing at the knowledge-base/ prefix in the storage bucket
+      const bedrockDataSource = new bedrock.CfnDataSource(this, 'BedrockDataSource', {
+        knowledgeBaseId: bedrockKb.attrKnowledgeBaseId,
+        name: this.namer.wisdom('kb-s3-source'),
+        dataSourceConfiguration: {
+          type: 'S3',
+          s3Configuration: {
+            bucketArn: kbBucket.bucketArn,
+          },
+        },
+        vectorIngestionConfiguration: {
+          parsingConfiguration: {
+            parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
+            bedrockFoundationModelConfiguration: {
+              modelArn: parsingModelArn,
+            },
+          },
+        },
+      });
+      bedrockDataSource.node.addDependency(bedrockKb);
+
+      // IAM role that Q in Connect (Wisdom) assumes to call bedrock:Retrieve
+      // and invoke the answer-generation model. Q in Connect's self-service
+      // agent uses this role both to retrieve KB chunks and to invoke the FM
+      // that generates the final answer from the retrieved context.
+      const wisdomBedrockAccessRole = new iam.Role(this, 'WisdomBedrockAccessRole', {
+        assumedBy: new iam.ServicePrincipal('wisdom.amazonaws.com', {
+          conditions: {
+            StringEquals: { 'aws:SourceAccount': this.account },
+          },
+        }),
+        description: 'Role for Q in Connect to retrieve from Bedrock Knowledge Base and invoke answer generation model',
+        inlinePolicies: {
+          BedrockAccess: new iam.PolicyDocument({
+            statements: [
+              new iam.PolicyStatement({
+                sid: 'RetrieveFromKnowledgeBase',
+                actions: ['bedrock:Retrieve', 'bedrock:RetrieveAndGenerate'],
+                resources: [bedrockKb.attrKnowledgeBaseArn],
+              }),
+              // Answer generation model — Q in Connect invokes this via the
+              // inference profile to generate answers from retrieved KB content.
+              new iam.PolicyStatement({
+                sid: 'InvokeAnswerGenModel',
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
+                resources: [
+                  `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{answerGenModelId}}`,
+                ],
+              }),
+              new iam.PolicyStatement({
+                sid: 'InvokeAnswerGenModelCrossRegion',
+                actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                resources: [
+                  `arn:aws:bedrock:*::foundation-model/${'{{answerGenModelId}}'.replace(/^[a-z]{2}\./, '')}`,
+                ],
+                conditions: {
+                  StringEquals: {
+                    'bedrock:InferenceProfileArn': `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{answerGenModelId}}`,
+                  },
+                },
+              }),
+            ],
+          }),
+        },
+      });
+
+      // Associate the Bedrock KB with the Q in Connect assistant
+      bedrockKbAssociation = new wisdom.CfnAssistantAssociation(this, 'BedrockKbAssociation', {
+        assistantId: assistant.attrAssistantId,
+        associationType: 'EXTERNAL_BEDROCK_KNOWLEDGE_BASE',
+        association: {
+          externalBedrockKnowledgeBaseConfig: {
+            bedrockKnowledgeBaseArn: bedrockKb.attrKnowledgeBaseArn,
+            accessRoleArn: wisdomBedrockAccessRole.roleArn,
+          },
+        },
+      });
+      bedrockKbAssociation.node.addDependency(bedrockKb);
+
+      new cdk.CfnOutput(this, 'KnowledgeBaseBucketName', { value: kbBucket.bucketName });
+      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseId', { value: bedrockKb.attrKnowledgeBaseId });
+      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseArn', { value: bedrockKb.attrKnowledgeBaseArn });
+      new cdk.CfnOutput(this, 'BedrockDataSourceId', { value: bedrockDataSource.attrDataSourceId });
+    }
 
     // SELF_SERVICE AI Prompt — answer generation from KB documents (YAML format required by Q Connect)
     const answerGenText = readPrompt('self-service');
@@ -146,6 +398,88 @@ export class WisdomStack extends BlueprintStack {
       },
     );
 
+    // --- AI Guardrail for service agent ---
+    // Blocks harmful content, off-topic requests, PII leakage, and prompt
+    // injection attempts. Content filter strengths are set to MEDIUM for input
+    // (callers may use informal language) and HIGH for output (the agent's
+    // responses must always be appropriate). Contextual grounding catches
+    // hallucinations by requiring responses to be grounded in retrieved content.
+    // The AWS::Wisdom::AIGuardrail CloudFormation handler is unreliable (it
+    // fails with an opaque GeneralServiceException even for configs the
+    // qconnect API accepts, and doesn't expose the required visibilityStatus).
+    // So the guardrail is created via a custom resource that calls the qconnect
+    // CreateAIGuardrail API directly — the exact camelCase config the CLI
+    // accepts. This mirrors the AgentCore gateway's inline-Lambda pattern.
+    const guardrailName = this.namer.wisdom('guardrail');
+    const guardrailFnRole = new iam.Role(this, 'GuardrailFnRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Execution role for the AI guardrail custom resource Lambda',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+      inlinePolicies: {
+        GuardrailManage: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: [
+                'wisdom:CreateAIGuardrail',
+                'wisdom:UpdateAIGuardrail',
+                'wisdom:DeleteAIGuardrail',
+                'wisdom:CreateAIGuardrailVersion',
+              ],
+              // The guardrail's ARN isn't known until creation; scope to the
+              // assistant's guardrail sub-resources in this account/region.
+              resources: [
+                `arn:aws:wisdom:${this.region}:${this.account}:assistant/*`,
+                `arn:aws:wisdom:${this.region}:${this.account}:ai-guardrail/*/*`,
+              ],
+            }),
+          ],
+        }),
+      },
+    });
+
+    const guardrailFn = new lambda.Function(this, 'GuardrailFn', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      role: guardrailFnRole,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 256,
+      description: 'Creates/updates/deletes the Q in Connect AI guardrail via the qconnect API',
+      code: lambda.Code.fromInline(GUARDRAIL_HANDLER),
+    });
+
+    const guardrail = new cdk.CustomResource(this, 'AIGuardrail', {
+      serviceToken: guardrailFn.functionArn,
+      properties: {
+        AssistantId: assistant.attrAssistantId,
+        Name: guardrailName,
+        // Hash of the inline policy config — any edit to the GUARDRAIL_HANDLER's
+        // policy constants changes this hash, which triggers a CloudFormation
+        // Update on the custom resource (publishing a new guardrail version).
+        ConfigHash: crypto.createHash('sha256').update(GUARDRAIL_HANDLER).digest('hex').slice(0, 12),
+      },
+    });
+    guardrail.node.addDependency(assistant);
+
+    // The version-qualified guardrail id (id:version) — AI agents require the
+    // qualifier, not the bare id.
+    const guardrailId = guardrail.getAttString('QualifiedId');
+
+    // Bind the self-service agent's answer generation to a single KB
+    // association. Q in Connect AI agents support exactly ONE KNOWLEDGE_BASE
+    // association configuration, so prefer the Bedrock KB when it's enabled
+    // (that's where the real content lives), otherwise fall back to the native
+    // CUSTOM KB. The associationConfigurations.associationType schema only allows
+    // KNOWLEDGE_BASE; the associationId is the assistant-association id, which is
+    // the same shape for both native and Bedrock-backed associations.
+    const selfServiceAssociations: wisdom.CfnAIAgent.AssociationConfigurationProperty[] = [
+      {
+        associationType: 'KNOWLEDGE_BASE',
+        associationId: (bedrockKbAssociation ?? kbAssociation).attrAssistantAssociationId,
+      },
+    ];
+
     // SELF_SERVICE AI Agent — used by Retrieve tool for answer generation
     const selfServiceAgent = new wisdom.CfnAIAgent(this, 'SelfServiceAgent', {
       assistantId: assistant.attrAssistantId,
@@ -154,6 +488,8 @@ export class WisdomStack extends BlueprintStack {
       configuration: {
         selfServiceAiAgentConfiguration: {
           selfServiceAnswerGenerationAiPromptId: answerGenPromptVersion.attrAiPromptVersionId,
+          associationConfigurations: selfServiceAssociations,
+          selfServiceAiGuardrailId: guardrailId,
         },
       },
     });
@@ -200,6 +536,7 @@ export class WisdomStack extends BlueprintStack {
           orchestrationAiPromptId: orchestrationPromptVersion.attrAiPromptVersionId,
           connectInstanceArn: props.instanceArn,
           locale: '{{lexLocaleId}}',
+          orchestrationAiGuardrailId: guardrailId,
           toolConfigurations: [
             {
               toolName: 'Complete',
@@ -242,9 +579,15 @@ export class WisdomStack extends BlueprintStack {
                   value: {
                     constant: {
                       type: 'JSON_STRING',
-                      value: cdk.Fn.sub('["${AssociationId}"]', {
-                        AssociationId: kbAssociation.attrAssistantAssociationId,
-                      }),
+                      // Q Connect Retrieve supports only a SINGLE association ID.
+                      // Prefer the Bedrock KB when enabled (that's where real content lives).
+                      value: bedrockKbAssociation
+                        ? cdk.Fn.sub('["${BedrockId}"]', {
+                            BedrockId: bedrockKbAssociation.attrAssistantAssociationId,
+                          })
+                        : cdk.Fn.sub('["${AssociationId}"]', {
+                            AssociationId: kbAssociation.attrAssistantAssociationId,
+                          }),
                     },
                   },
                 },
@@ -355,36 +698,33 @@ export class WisdomStack extends BlueprintStack {
             'ResourceNotFoundException|InvalidRequestException|AccessDeniedException',
         },
         policy: cr.AwsCustomResourcePolicy.fromStatements([
-          // Associate/DisassociateSecurityProfiles authorize against the AI-AGENT
-          // EntityArn passed in the call — a `wisdom:`-service ai-agent ARN
-          // (arn:aws:wisdom:...:ai-agent/<assistant>/<agent>:$LATEST) — NOT the
-          // Connect instance ARN. Scoping these two actions to `props.instanceArn`
-          // therefore fails at deploy with "not authorized to perform:
-          // connect:AssociateSecurityProfiles on resource: arn:aws:wisdom:...ai-agent/...".
-          // The action's authorized resource is cross-service and its ARN shape is
-          // not reliably reconstructable here, so we use `'*'`. The custom-resource
-          // role is single-purpose and only ever calls (Dis)associateSecurityProfiles,
-          // so the blast radius is limited.
+          // AssociateSecurityProfiles / DisassociateSecurityProfiles authorize
+          // against BOTH the Connect instance's security-profile sub-resource
+          // (arn:aws:connect:...instance/ID/security-profile/*) AND the wisdom
+          // AI-agent entity ARN (arn:aws:wisdom:...ai-agent/ASSISTANT/AGENT:$VER).
+          // Both must be in the resource list or the call is rejected.
           new iam.PolicyStatement({
             actions: [
               'connect:AssociateSecurityProfiles',
               'connect:DisassociateSecurityProfiles',
             ],
-            resources: ['*'],
+            resources: [
+              `${props.instanceArn}/security-profile/*`,
+              `${baseAgentArn}:$SAVED`,
+              `${baseAgentArn}:$LATEST`,
+            ],
           }),
           // GetAIAgent is called internally by AssociateSecurityProfiles to
-          // validate the AI-AGENT entity. Scoping it to `${baseAgentArn}:*` is
-          // rejected ("Missing wisdom:GetAiAgent permissions in credentials") —
-          // the service validates against the bare agent ARN (no version suffix),
-          // which that pattern does not match, and the ARN shape is not reliably
-          // reconstructable here. Use `'*'` for the same reason as the associate
-          // actions above; this role is single-purpose.
+          // validate the AI-AGENT entity. Scoped to agents under this assistant.
           new iam.PolicyStatement({
             actions: [
               'wisdom:GetAIAgent',
               'qconnect:GetAIAgent',
             ],
-            resources: ['*'],
+            resources: [
+              baseAgentArn,
+              `${baseAgentArn}:*`,
+            ],
           }),
           // ListEntitySecurityProfiles is a read/list discovery action that
           // requires account-scope resources.
@@ -440,8 +780,290 @@ export class WisdomStack extends BlueprintStack {
     });
     enableBotMgmt.node.addDependency(orchestrationAgent);
 
+    // --- Lex V2 Bot for AI Agent self-service ---
+    // The bot is an implementation detail of the Q in Connect AI agent setup: it
+    // routes all utterances through QInConnectIntent to the orchestration agent
+    // (Nova Sonic). It has no independent intents or custom logic.
+    const botRole = new iam.Role(this, 'BotRole', {
+      assumedBy: new iam.ServicePrincipal('lexv2.amazonaws.com'),
+      description: 'Allows the Lex bot to invoke Q-in-Connect for AI Agent self-service',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonLexRunBotsOnly'),
+      ],
+      inlinePolicies: {
+        QInConnectAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              sid: 'QInConnectAssistantPolicy',
+              actions: ['wisdom:CreateSession', 'wisdom:GetAssistant'],
+              resources: [assistant.attrAssistantArn, `${assistant.attrAssistantArn}/*`],
+            }),
+            new iam.PolicyStatement({
+              sid: 'QInConnectSessionsPolicy',
+              actions: ['wisdom:SendMessage', 'wisdom:GetNextMessage'],
+              resources: [
+                cdk.Arn.format({
+                  service: 'wisdom',
+                  resource: 'session',
+                  resourceName: `${assistant.attrAssistantId}/*`,
+                }, this),
+              ],
+            }),
+          ],
+        }),
+      },
+    });
+
+    const bot = new lex.CfnBot(this, 'Bot', {
+      name: this.namer.lex('bot'),
+      description: 'Conversational AI bot for Connect AI Agent self-service',
+      roleArn: botRole.roleArn,
+      dataPrivacy: { ChildDirected: false },
+      idleSessionTtlInSeconds: 300,
+      botLocales: [{
+        localeId: '{{lexLocaleId}}',
+        nluConfidenceThreshold: 0.4,
+        // Nova 2 Sonic speech-to-speech on the bot locale: one unified model
+        // handles speech understanding AND generation (prosody-aware, native
+        // barge-in), replacing the default ASR + downstream-TTS pipeline.
+        // The model ARN is region-derived (same account-less Bedrock
+        // foundation-model ARN in every supported region). The voiceId is the
+        // lowercase Nova voice (e.g. tina, matthew) and is authoritative for
+        // the caller-facing voice during the bot session — it takes priority
+        // over the flow's Set-voice block and over the legacy
+        // x-amz-lex:audio:speaker-model-voice-override session attribute.
+        // The flow's Set-voice block still governs TTS prompts played outside
+        // the bot session (goodbye/error/consent messages).
+        unifiedSpeechSettings: {
+          speechFoundationModel: {
+            modelArn: cdk.Arn.format({
+              partition: this.partition,
+              service: 'bedrock',
+              region: this.region,
+              account: '',
+              resource: 'foundation-model',
+              resourceName: 'amazon.nova-2-sonic-v1:0',
+              arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+            }),
+            voiceId: '{{sonicVoiceId}}',
+          },
+        },
+        intents: [
+          {
+            name: 'QInConnectIntent',
+            parentIntentSignature: 'AMAZON.QInConnectIntent',
+            qInConnectIntentConfiguration: {
+              qInConnectAssistantConfiguration: {
+                assistantArn: assistant.attrAssistantArn,
+              },
+            },
+          },
+          {
+            name: 'FallbackIntent',
+            parentIntentSignature: 'AMAZON.FallbackIntent',
+          },
+        ],
+      }],
+      autoBuildBotLocales: true,
+      botTags: [{ key: 'AmazonConnectEnabled', value: 'True' }],
+    });
+
+    const botVersion = new lex.CfnBotVersion(this, 'BotVersion', {
+      botId: bot.attrId,
+      botVersionLocaleSpecification: [{
+        localeId: '{{lexLocaleId}}',
+        botVersionLocaleDetails: { sourceBotVersion: 'DRAFT' },
+      }],
+    });
+    botVersion.addDependency(bot);
+
+    const botAlias = new lex.CfnBotAlias(this, 'BotAlias', {
+      botId: bot.attrId,
+      botAliasName: 'live',
+      botVersion: botVersion.attrBotVersion,
+      botAliasLocaleSettings: [{
+        localeId: '{{lexLocaleId}}',
+        botAliasLocaleSetting: { enabled: true },
+      }],
+      botAliasTags: [{ key: 'AmazonConnectEnabled', value: 'True' }],
+    });
+
+    new connect.CfnIntegrationAssociation(this, 'LexAssociation', {
+      instanceId: props.instanceArn,
+      integrationType: 'LEX_BOT',
+      integrationArn: botAlias.attrArn,
+    });
+
+    this.botAliasArn = botAlias.attrArn;
+
     new cdk.CfnOutput(this, 'AssistantId', { value: this.assistantId });
     new cdk.CfnOutput(this, 'OrchestrationAgentId', { value: this.orchestrationAgentId });
     new cdk.CfnOutput(this, 'OrchestrationAgentArn', { value: this.orchestrationAgentArn });
+    new cdk.CfnOutput(this, 'BotAliasArn', { value: this.botAliasArn });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Inline Python handler for the AI guardrail custom resource.
+//
+// The AWS::Wisdom::AIGuardrail CloudFormation resource is unreliable (opaque
+// GeneralServiceException, no visibilityStatus support), so this handler calls
+// the qconnect API directly with the exact camelCase policy config that the
+// CLI accepts. Create returns the guardrail id; Update updates in place; Delete
+// removes it. The guardrail is created with visibilityStatus PUBLISHED so the
+// AI agents can reference it immediately.
+// ---------------------------------------------------------------------------
+const GUARDRAIL_HANDLER = `
+import json, logging, urllib.request
+import boto3
+from botocore.exceptions import ClientError
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BLOCKED_INPUT = 'I cannot process that request. Please rephrase your question about our services.'
+BLOCKED_OUTPUT = 'I cannot provide that information. Let me help you with something else.'
+
+CONTENT_POLICY = {
+    'filtersConfig': [
+        {'type': 'HATE', 'inputStrength': 'MEDIUM', 'outputStrength': 'HIGH'},
+        {'type': 'INSULTS', 'inputStrength': 'MEDIUM', 'outputStrength': 'HIGH'},
+        {'type': 'SEXUAL', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
+        {'type': 'VIOLENCE', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
+        {'type': 'MISCONDUCT', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
+        # PROMPT_ATTACK only supports input filtering — outputStrength MUST be NONE.
+        {'type': 'PROMPT_ATTACK', 'inputStrength': 'HIGH', 'outputStrength': 'NONE'},
+    ]
+}
+
+TOPIC_POLICY = {
+    'topicsConfig': [
+        {
+            'name': 'off-topic',
+            'type': 'DENY',
+            'definition': 'Requests unrelated to company services, products, orders, accounts, or support. Includes general knowledge, personal advice, coding help, or topics outside customer service.',
+            'examples': [
+                'What is the meaning of life?',
+                'Write me a poem',
+                'Help me with my homework',
+                'What is the weather today?',
+            ],
+        }
+    ]
+}
+
+SENSITIVE_POLICY = {
+    'piiEntitiesConfig': [
+        {'type': 'CREDIT_DEBIT_CARD_NUMBER', 'action': 'ANONYMIZE'},
+        {'type': 'US_SOCIAL_SECURITY_NUMBER', 'action': 'ANONYMIZE'},
+        {'type': 'US_BANK_ACCOUNT_NUMBER', 'action': 'ANONYMIZE'},
+        {'type': 'CREDIT_DEBIT_CARD_CVV', 'action': 'BLOCK'},
+        {'type': 'PIN', 'action': 'BLOCK'},
+        {'type': 'PASSWORD', 'action': 'BLOCK'},
+    ]
+}
+
+WORD_POLICY = {'managedWordListsConfig': [{'type': 'PROFANITY'}]}
+
+
+def create_guardrail(client, assistant_id, name):
+    resp = client.create_ai_guardrail(
+        assistantId=assistant_id,
+        name=name,
+        visibilityStatus='PUBLISHED',
+        blockedInputMessaging=BLOCKED_INPUT,
+        blockedOutputsMessaging=BLOCKED_OUTPUT,
+        description='Service agent guardrail - blocks harmful content, PII, off-topic, and prompt attacks',
+        contentPolicyConfig=CONTENT_POLICY,
+        topicPolicyConfig=TOPIC_POLICY,
+        sensitiveInformationPolicyConfig=SENSITIVE_POLICY,
+        wordPolicyConfig=WORD_POLICY,
+    )
+    return resp['aiGuardrail']['aiGuardrailId']
+
+
+def update_guardrail(client, assistant_id, guardrail_id):
+    client.update_ai_guardrail(
+        assistantId=assistant_id,
+        aiGuardrailId=guardrail_id,
+        visibilityStatus='PUBLISHED',
+        blockedInputMessaging=BLOCKED_INPUT,
+        blockedOutputsMessaging=BLOCKED_OUTPUT,
+        description='Service agent guardrail - blocks harmful content, PII, off-topic, and prompt attacks',
+        contentPolicyConfig=CONTENT_POLICY,
+        topicPolicyConfig=TOPIC_POLICY,
+        sensitiveInformationPolicyConfig=SENSITIVE_POLICY,
+        wordPolicyConfig=WORD_POLICY,
+    )
+
+
+def publish_version(client, assistant_id, guardrail_id):
+    # AI agents must reference a guardrail by a version qualifier (id:version),
+    # not the bare id. Publish a version and return the qualified id.
+    resp = client.create_ai_guardrail_version(
+        assistantId=assistant_id,
+        aiGuardrailId=guardrail_id,
+    )
+    version = resp['versionNumber']
+    return f"{guardrail_id}:{int(version)}"
+
+
+def handler(event, context):
+    logger.info(f"RequestType: {event.get('RequestType')}")
+    rt = event.get('RequestType')
+    props = event.get('ResourceProperties', {})
+    assistant_id = props['AssistantId']
+    name = props['Name']
+    client = boto3.client('qconnect')
+
+    try:
+        if rt == 'Create':
+            gid = create_guardrail(client, assistant_id, name)
+            qualified = publish_version(client, assistant_id, gid)
+            send(event, context, 'SUCCESS',
+                 {'AIGuardrailId': gid, 'QualifiedId': qualified}, physical_id=gid)
+        elif rt == 'Update':
+            gid = event.get('PhysicalResourceId', '')
+            try:
+                update_guardrail(client, assistant_id, gid)
+            except ClientError as e:
+                # If the existing guardrail can't be updated, create a fresh one.
+                logger.warning(f"Update failed ({e}); creating a new guardrail")
+                gid = create_guardrail(client, assistant_id, name)
+            # Publish a new version so the update is reflected in a qualifier.
+            qualified = publish_version(client, assistant_id, gid)
+            send(event, context, 'SUCCESS',
+                 {'AIGuardrailId': gid, 'QualifiedId': qualified}, physical_id=gid)
+        elif rt == 'Delete':
+            gid = event.get('PhysicalResourceId', '')
+            if gid and gid.count('-') >= 4:  # looks like a real id, not a failed-create token
+                try:
+                    client.delete_ai_guardrail(assistantId=assistant_id, aiGuardrailId=gid)
+                except ClientError as e:
+                    logger.warning(f"Delete tolerated error: {e}")
+            send(event, context, 'SUCCESS', {}, physical_id=gid or 'none')
+        else:
+            send(event, context, 'FAILED', {}, reason=f"Unknown RequestType {rt}")
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        send(event, context, 'FAILED', {}, reason=str(e), physical_id=event.get('PhysicalResourceId', 'none'))
+
+
+def send(event, context, status, data, reason=None, physical_id=None):
+    body = {
+        'Status': status,
+        'Reason': reason or f"See CloudWatch: {context.log_stream_name}",
+        'PhysicalResourceId': physical_id or context.log_stream_name,
+        'StackId': event['StackId'],
+        'RequestId': event['RequestId'],
+        'LogicalResourceId': event['LogicalResourceId'],
+        'Data': data,
+    }
+    req = urllib.request.Request(
+        event['ResponseURL'],
+        data=json.dumps(body).encode(),
+        headers={'Content-Type': ''},
+        method='PUT',
+    )
+    urllib.request.urlopen(req)
+`;

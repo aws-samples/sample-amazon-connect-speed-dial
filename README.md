@@ -13,14 +13,14 @@ What the deployed contact center supports today:
 | Feature | Status | Notes |
 |---------|:------:|-------|
 | **Nova Sonic 2 voice agent** | ✅ | Q-in-Connect orchestration agent (Claude Haiku 4.5) + self-service answer generation (Nova Pro). |
-| **Knowledge base (RAG)** | ✅ | Empty Q-in-Connect knowledge base wired to the `Retrieve` tool; populate via S3 sync or web crawler after deploy. |
+| **Knowledge base (RAG)** | ✅ | Optional — Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populated at setup from the bundled sample data or your own folder via `scripts/sync-kb.sh` (re-runnable anytime). |
 | **Human transfer** | ✅ | Optional — routes the agent's Escalate outcome to a live-agent queue. |
 | **Tool calling (MCP)** | ✅ | Optional — ships a sample Lambda tool and wires the AgentCore MCP gateway's tools into the agent. |
 | **Customer Profiles** | ✅ | Optional — uses Amazon Connect Customer Profiles ot personalize the caller experience. Identity get's mapped by phone number and cognito sub when using the web widget. |
 | **Pre-call context injection** | ✅ | Optional — a Lambda pushes caller context into the Q Connect session before the agent starts, so it knows the caller from the first turn (demo context aligned with the gateway's sample tools). |
 | **Web-call frontend** | ✅ | Optional — browser-based calling (CloudFront + Cognito + API Gateway), with guided widget + sign-in setup. |
 | **UK phone number (DID)** | ✅ | Auto-claims a `+44` number and attaches it to the flow; other countries via the console. |
-| **Contact-events logging** | ✅ | EventBridge logging of contact events is always deployed. |
+| **Contact-events logging** | ✅ | Optional — EventBridge rule + Lambda logging contact lifecycle (DISCONNECTED) events to CloudWatch. |
 | **Language selection** | ✅ | English (`en_US`) or German (`de_DE`) — localizes the greeting, agent and self-service prompts, goodbye/error messages, the recording-consent prompt, the Lex bot locale, and the TTS voice/language. Any region × language combination is valid. |
 | **Region selection** | ✅ | `us-east-1` (N. Virginia, default) or `eu-central-1` (Frankfurt). Both run the full Connect + Q-in-Connect + Lex + Nova Sonic voice stack; the Bedrock inference-profile prefix (`us.*` / `eu.*`) is derived from the region. |
 | **Voice selection** | ✅ | Feminine (default) or masculine Nova 2 Sonic speech-to-speech voice, resolved per language (English → tiffany/matthew, German → tina/lennart); out-of-bot flow prompts use a matching generative Polly voice. |
@@ -30,7 +30,6 @@ Planned / not yet available:
 | Feature | Status | Notes |
 |---------|:------:|-------|
 | Model tier / persona choice | 🚧 | Model tier is fixed (Haiku + Nova Pro); voice and language are selectable (see above). |
-| Knowledge base auto-population | 🚧 | From a website or S3 path at setup time. |
 | Guardrails | 🚧 | Content-safety filters. |
 | Connect Agent Panel | 🚧 | Agent workspace UI for live agents. |
 | Observability dashboard | 🚧 | Beyond the basic contact-events logging that ships today. |
@@ -66,19 +65,19 @@ UK DIDs are the only number type the skill claims automatically because they hav
 
 ## What it deploys
 
-Nine CloudFormation stacks in the selected region (`us-east-1` or `eu-central-1`; plus a tenth,
-**WebcallWidget**, when the web-call frontend is enabled):
+Eight CloudFormation stacks in the selected region (`us-east-1` or `eu-central-1`); plus
+**WebcallWidget** when the web-call frontend is enabled, and **ContactEvents** when
+contact-events logging is enabled:
 
 | Stack | Resources |
 |-------|-----------|
 | ConnectInstance | Connect instance, Customer Profiles, storage bucket |
 | Queues | Default queue and 24x7 hours of operation |
-| Wisdom | Q-in-Connect assistant, knowledge base, AI prompts (orchestration + answer gen), AI agents (orchestration + self-service), Connect integration |
-| LexBot | Lex V2 bot (FallbackIntent passthrough), bot version, bot alias, Connect integration |
+| Wisdom | Q-in-Connect assistant, knowledge base (+ optional Bedrock KB with S3 Vectors), AI prompts (orchestration + answer gen), AI agents (orchestration + self-service), Lex V2 bot + alias, Connect integrations |
 | ContactFlow | Inbound contact flow with AI Agent compound block (CreateWisdomSession → UpdateContactData → ConnectParticipantWithLexBot), composed from the base flow + capability branches |
 | AgentCoreGateway | Bedrock AgentCore MCP gateway + sample Lambda tool, registered as an MCP server integration on the instance |
 | FlowLambdas | Lambda functions for contact-flow tool calls |
-| ContactEvents | EventBridge logging for contact events |
+| ContactEvents _(conditional)_ | EventBridge logging for contact events (`contactEventsEnabled`) |
 | PostDeploy | Custom resources to set default AI agents on the assistant |
 | WebcallWidget _(conditional)_ | CloudFront + Cognito + API Gateway for browser-based web calling |
 
@@ -94,6 +93,30 @@ fixed flavors:
 
 Any combination is valid; the transfer/tool branches are merged into the base contact flow at
 synth time.
+
+## IAM Identity Center (SSO) Integration
+
+Instead of Connect-managed users, the instance can authenticate agents/admins through **AWS IAM
+Identity Center** (SAML). Enable it by setting `identityCenterEnabled: true` in the order JSON
+(the skill asks "How should agents and admins sign in?"). The blueprint creates the instance with
+`identityManagementType: SAML` and auto-provisions the IAM SAML Provider and Federation Role from
+a `saml-metadata.xml` you supply.
+
+> **Important:** the identity management type is fixed at instance creation and **cannot be
+> changed afterward** — switching later means destroying and recreating the whole instance.
+> Decide before your first deploy.
+
+**Before deploying**, you must create the Identity Center application, download its SAML metadata
+XML, and save it as `saml-metadata.xml` in your working directory — synth (and preflight) fail
+without it. **After deploying**, you complete the Identity Center app config (attribute mappings,
+relay state, user assignment) and create matching Connect users.
+
+Because this only applies to SSO deployments and involves several console steps and known
+gotchas (the mandatory attribute mappings, the email-as-Login rule, the `create-user` CLI quirk,
+cross-account Identity Center), the full walkthrough and troubleshooting table live in a dedicated
+reference:
+
+➡️ **[references/identity-center-sso.md](references/identity-center-sso.md)**
 
 ## Prerequisites
 
@@ -162,11 +185,3 @@ tests/test-all-capabilities.sh  # render + cdk synth for every transfer × tool 
 │   └── fixtures/sample-values.json
 └── references/                 # Architecture docs and troubleshooting
 ```
-## Security
-
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
-
-## License
-
-This library is licensed under the MIT-0 License. See the LICENSE file.
-

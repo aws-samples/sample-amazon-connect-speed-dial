@@ -149,3 +149,40 @@ button:disabled {
   justify-content: center;
   color: #777;
 }
+
+/* Mode selector (voice / chat toggle) */
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.mode-selector {
+  display: flex;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mode-button {
+  padding: 0.4rem 1rem;
+  border: none;
+  background: #f5f5f5;
+  color: #555;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.mode-button:hover {
+  background: #e0e0e0;
+}
+
+.mode-button.active {
+  background: #123456;
+  color: #fff;
+}
+
+.mode-button + .mode-button {
+  border-left: 1px solid #ddd;
+}

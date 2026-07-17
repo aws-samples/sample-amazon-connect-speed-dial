@@ -8,11 +8,15 @@
   "frontendEnabled": false,
   "orchestrationModelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
   "answerGenModelId": "us.amazon.nova-pro-v1:0",
+  "kbParsingModelId": "us.amazon.nova-pro-v1:0",
+  "knowledgeBaseEnabled": false,
+  "identityCenterEnabled": false,
   "lexLocaleId": "en_US",
   "ttsLanguageCode": "en-US",
   "voiceId": "Tiffany",
   "sonicVoiceId": "tiffany",
   "promptLanguage": "English",
   "selfServiceFallback": "I don't have an answer.",
-  "dataLakeEnabled": false
+  "dataLakeEnabled": false,
+  "contactEventsEnabled": false
 }
