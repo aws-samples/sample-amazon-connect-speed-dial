@@ -49,13 +49,17 @@
     <div id="authenticated-content" class="authenticated-container" style="display: none;">
         <header class="header">
             <h1>Connect Webcall</h1>
-            <div class="user-info">
-                <span>Logged in as: <strong id="username-display"></strong></span>
-                <button id="logout-button" class="logout-button">Logout</button>
+            <div class="header-controls">
+                <div id="mode-selector" class="mode-selector" style="display: none;">
+                </div>
+                <div class="user-info">
+                    <span>Logged in as: <strong id="username-display"></strong></span>
+                    <button id="logout-button" class="logout-button">Logout</button>
+                </div>
             </div>
         </header>
         <main class="main-content">
-            <p>The Connect widget will appear in the bottom-right corner once authenticated.</p>
+            <p id="widget-status">The Connect widget will appear in the bottom-right corner once authenticated.</p>
         </main>
     </div>
 

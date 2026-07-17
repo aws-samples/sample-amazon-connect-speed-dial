@@ -116,6 +116,19 @@ encryptionEnabled="$(jq -r 'if .encryptionEnabled == null then true else .encryp
 customerProfilesEnabled="$(jq -r 'if .customerProfilesEnabled == null then true else .customerProfilesEnabled end | if type=="boolean" then . else error("customerProfilesEnabled must be boolean") end' "$ORDER")"
 frontendEnabled="$(jq -r '.frontendEnabled // false | if type=="boolean" then . else error("frontendEnabled must be boolean") end' "$ORDER")"
 dataLakeEnabled="$(jq -r '.dataLakeEnabled // false | if type=="boolean" then . else error("dataLakeEnabled must be boolean") end' "$ORDER")"
+contactEventsEnabled="$(jq -r '.contactEventsEnabled // false | if type=="boolean" then . else error("contactEventsEnabled must be boolean") end' "$ORDER")"
+
+# Identity Center — boolean; when true the Connect instance uses SAML identity (SSO via Identity Center).
+identityCenterEnabled="$(jq -r '.identityCenterEnabled // false | if type=="boolean" then . else error("identityCenterEnabled must be boolean") end' "$ORDER")"
+
+# Knowledge base — boolean; the KB parsing model follows the region's
+# inference-profile prefix (same derivation as the orchestration/answer models).
+knowledgeBaseEnabled="$(jq -r '.knowledgeBaseEnabled // false | if type=="boolean" then . else error("knowledgeBaseEnabled must be boolean") end' "$ORDER")"
+if [[ "$region" == "eu-central-1" ]]; then
+  kbParsingModelId="eu.amazon.nova-pro-v1:0"
+else
+  kbParsingModelId="us.amazon.nova-pro-v1:0"
+fi
 
 # --- validate free text for TypeScript string-literal target ---------------
 for pair in "companyName:$companyName" "greeting:$greeting"; do
@@ -140,6 +153,10 @@ jq -n \
   --argjson customerProfilesEnabled "$customerProfilesEnabled" \
   --argjson frontendEnabled "$frontendEnabled" \
   --argjson dataLakeEnabled "$dataLakeEnabled" \
+  --argjson contactEventsEnabled "$contactEventsEnabled" \
+  --argjson identityCenterEnabled "$identityCenterEnabled" \
+  --argjson knowledgeBaseEnabled "$knowledgeBaseEnabled" \
+  --arg kbParsingModelId "$kbParsingModelId" \
   --arg lexLocaleId "$lexLocaleId" \
   --arg ttsLanguageCode "$ttsLanguageCode" \
   --arg voiceId "$voiceId" \
@@ -153,6 +170,9 @@ jq -n \
     contextInjectionEnabled:$contextInjectionEnabled, recordingEnabled:$recordingEnabled,
     encryptionEnabled:$encryptionEnabled, customerProfilesEnabled:$customerProfilesEnabled,
     frontendEnabled:$frontendEnabled, dataLakeEnabled:$dataLakeEnabled,
+    contactEventsEnabled:$contactEventsEnabled,
+    identityCenterEnabled:$identityCenterEnabled,
+    knowledgeBaseEnabled:$knowledgeBaseEnabled, kbParsingModelId:$kbParsingModelId,
     lexLocaleId:$lexLocaleId, ttsLanguageCode:$ttsLanguageCode, voiceId:$voiceId,
     sonicVoiceId:$sonicVoiceId,
     promptLanguage:$promptLanguage, selfServiceFallback:$selfServiceFallback,

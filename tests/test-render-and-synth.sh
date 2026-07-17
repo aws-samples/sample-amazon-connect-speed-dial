@@ -40,7 +40,7 @@ assert_resource_count() {
 
 assert_resource_count "$TEMPLATE_PREFIX-ConnectInstance.template.json" "AWS::Connect::Instance" 1
 assert_resource_count "$TEMPLATE_PREFIX-Queues.template.json" "AWS::Connect::Queue" 1
-assert_resource_count "$TEMPLATE_PREFIX-LexBot.template.json" "AWS::Lex::Bot" 1
+assert_resource_count "$TEMPLATE_PREFIX-Wisdom.template.json" "AWS::Lex::Bot" 1
 assert_resource_count "$TEMPLATE_PREFIX-Wisdom.template.json" "AWS::Wisdom::Assistant" 1
 assert_resource_count "$TEMPLATE_PREFIX-Wisdom.template.json" "AWS::Wisdom::AIAgent" 2
 assert_resource_count "$TEMPLATE_PREFIX-ContactFlow.template.json" "AWS::Connect::ContactFlow" 1
@@ -79,16 +79,17 @@ FLOW_CONTENT=$(jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::Conn
 # match tolerantly across the "<key>":"<value>" boundary.)
 echo "$FLOW_CONTENT" | grep -qE 'TextToSpeechVoice.{0,6}Tiffany' || { echo "FAIL: default voice Tiffany missing from flow" >&2; exit 1; }
 echo "$FLOW_CONTENT" | grep -qE 'languageCode.{0,6}en-US' || { echo "FAIL: default TTS languageCode en-US missing from flow metadata" >&2; exit 1; }
-LEX_LOCALES=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.LocaleId] | join(",")' "$TEMPLATE_PREFIX-LexBot.template.json")
-echo "$LEX_LOCALES" | grep -q "en_US" || { echo "FAIL: default Lex locale en_US missing (got: $LEX_LOCALES)" >&2; exit 1; }
+LEX_LOCALES=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.LocaleId] | join(",")' "$TEMPLATE_PREFIX-Wisdom.template.json")
 
 # Nova 2 Sonic speech-to-speech must be configured on the bot locale:
 # UnifiedSpeechSettings with the region-scoped foundation-model ARN and the
 # lowercase Sonic voice. This is the bot-level half of the S2S configuration;
 # the flow's Generative Set-voice block is the other half.
-LEX_USS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.UnifiedSpeechSettings.SpeechFoundationModel] | first' "$TEMPLATE_PREFIX-LexBot.template.json")
+LEX_USS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.UnifiedSpeechSettings.SpeechFoundationModel] | first' "$TEMPLATE_PREFIX-Wisdom.template.json")
 echo "$LEX_USS" | grep -q "foundation-model/amazon.nova-2-sonic-v1:0" || { echo "FAIL: Nova 2 Sonic model ARN missing from bot locale UnifiedSpeechSettings (got: $LEX_USS)" >&2; exit 1; }
 echo "$LEX_USS" | grep -q '"VoiceId": "tiffany"' || { echo "FAIL: Sonic voiceId tiffany missing from bot locale UnifiedSpeechSettings (got: $LEX_USS)" >&2; exit 1; }
+
+echo "$LEX_LOCALES" | grep -q "en_US" || { echo "FAIL: default Lex locale en_US missing (got: $LEX_LOCALES)" >&2; exit 1; }
 
 if [[ "$TRANSFER" == "true" ]]; then
   echo "$FLOW_CONTENT" | grep -q "TransferContactToQueue" || { echo "FAIL: transfer enabled but no TransferContactToQueue in flow" >&2; exit 1; }

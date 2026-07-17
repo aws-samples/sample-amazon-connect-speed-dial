@@ -21,6 +21,8 @@ export interface ConnectWidgetConfig {
   snippetId: string;
   /** Full URL to the Connect widget JS file (from the embed script src) */
   scriptUrl: string;
+  /** Human-readable label for the widget selector (e.g. 'Production', 'Test', 'Chat-only'). Defaults to the widget ID if not set. */
+  label?: string;
 }
 
 export interface DeploymentConfig {
@@ -52,6 +54,17 @@ export interface DeploymentConfig {
   frontendEnabled: boolean;
   /** When true, enables the Connect analytics data lake (contact records, flow events, agent stats). */
   dataLakeEnabled: boolean;
+  /** When true, enables Contact Events streaming to EventBridge and deploys the ContactEvents stack (EventBridge rules + Lambda for contact lifecycle events). */
+  contactEventsEnabled: boolean;
+  /** When true, create a Bedrock Managed Knowledge Base with S3 data source and associate it with the Q in Connect assistant. */
+  knowledgeBaseEnabled: boolean;
+  /**
+   * When true, the Connect instance is created with SAML identity management,
+   * enabling SSO via IAM Identity Center. When false, the instance uses
+   * CONNECT_MANAGED identity (built-in user management). This cannot be changed
+   * after instance creation.
+   */
+  identityCenterEnabled: boolean;
   /** Human-readable language the agent and flow speak ("German" | "English"), rendered from the order's language. Drives localized flow strings. */
   promptLanguage: string;
 
@@ -85,6 +98,9 @@ export const config: DeploymentConfig = {
   storageBucketBaseName: 'connect-storage',
   frontendEnabled: {{frontendEnabled}},
   dataLakeEnabled: {{dataLakeEnabled}},
+  contactEventsEnabled: {{contactEventsEnabled}},
+  knowledgeBaseEnabled: {{knowledgeBaseEnabled}},
+  identityCenterEnabled: {{identityCenterEnabled}},
   promptLanguage: '{{promptLanguage}}',
 
   // Connect Widget Frontend — add entries after creating widget(s) in Connect console

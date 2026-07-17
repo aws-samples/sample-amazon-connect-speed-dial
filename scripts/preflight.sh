@@ -27,6 +27,9 @@ info() {
 
 # Deploy region (default Virginia). Frankfurt is also supported.
 REGION="${1:-us-east-1}"
+# Optional: path to the order JSON — enables the Identity Center prerequisite
+# gate when the order has identityCenterEnabled=true.
+ORDER_FILE="${2:-}"
 case "$REGION" in
   us-east-1|eu-central-1) ;;
   *) fail "unsupported region '$REGION' (use us-east-1 or eu-central-1)";;
@@ -85,6 +88,47 @@ else
   echo "  https://console.aws.amazon.com/bedrock/home?region=$REGION#/modelaccess"
   echo ""
   fail "Bedrock model $BEDROCK_MODEL not accessible"
+fi
+
+# 5. Identity Center prerequisites (only when the order enables it).
+# The identity management type is IMMUTABLE after instance creation, and the
+# CDK synth requires saml-metadata.xml (connect-instance-stack.ts throws
+# without it) — so both must be settled BEFORE render/deploy, not after.
+if [[ -n "$ORDER_FILE" && -f "$ORDER_FILE" ]]; then
+  IDC_ENABLED="$(jq -r '.identityCenterEnabled // false' "$ORDER_FILE" 2>/dev/null || echo false)"
+  if [[ "$IDC_ENABLED" == "true" ]]; then
+    info "Identity Center is enabled — checking prerequisites..."
+
+    # 5a. The SAML metadata file must exist in the working dir (next to the
+    # order file); render-templates.sh carries it into the rendered project.
+    WORK_DIR="$(cd "$(dirname "$ORDER_FILE")" && pwd)"
+    if [[ -f "$WORK_DIR/saml-metadata.xml" ]]; then
+      # Cheap sanity check: it should be a SAML EntityDescriptor document.
+      if grep -q "EntityDescriptor" "$WORK_DIR/saml-metadata.xml"; then
+        ok "saml-metadata.xml found and looks like SAML metadata"
+      else
+        fail "saml-metadata.xml exists but does not look like SAML metadata (no EntityDescriptor element). Re-download it from: IAM Identity Center → Applications → your Connect app → IAM Identity Center metadata"
+      fi
+    else
+      echo "" >&2
+      echo "Identity Center SSO requires a MANUAL step before deployment:" >&2
+      echo "  1. IAM Identity Center console → Applications → Add application" >&2
+      echo "     → 'Add custom SAML 2.0 application' (or the Amazon Connect catalog app)" >&2
+      echo "  2. Download the 'IAM Identity Center SAML metadata file'" >&2
+      echo "  3. Save it as: $WORK_DIR/saml-metadata.xml" >&2
+      echo "" >&2
+      fail "saml-metadata.xml not found at $WORK_DIR/saml-metadata.xml — complete the manual Identity Center step first (the identity type cannot be changed after the instance is created)"
+    fi
+
+    # 5b. Soft probe: is an Identity Center instance visible from this account?
+    # Not authoritative — org instances often live in the management account and
+    # may not be listable from a member account — so this only warns.
+    if aws sso-admin list-instances --region "$REGION" --query 'Instances[0].InstanceArn' --output text 2>/dev/null | grep -q "^arn:"; then
+      ok "IAM Identity Center instance visible from this account"
+    else
+      warn "No Identity Center instance visible from this account/region — fine if Identity Center lives in your organization's management account (the SAML flow is browser-based and needs no cross-account trust)"
+    fi
+  fi
 fi
 
 echo ""

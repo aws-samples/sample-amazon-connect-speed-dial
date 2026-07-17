@@ -3,7 +3,6 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { ConnectInstanceStack, ConnectInstanceStackProps, DEMO_PROFILE_PHONE } from '../lib/connect-instance-stack';
 import { QueuesStack } from '../lib/queues-stack';
-import { LexBotStack } from '../lib/lex-bot-stack';
 import { WisdomStack } from '../lib/wisdom-stack';
 import { ContactFlowStack } from '../lib/contact-flow-stack';
 import { PostDeployStack } from '../lib/post-deploy-stack';
@@ -82,12 +81,6 @@ if (config.toolEnabled) {
   wisdom.addDependency(gateway);
 }
 
-const lex = new LexBotStack(app, `${stackPrefix}-LexBot`, {
-  env, instanceArn: instance.instanceArn, assistantArn: wisdom.assistantArn,
-});
-lex.addDependency(instance);
-lex.addDependency(wisdom);
-
 // FlowLambdas is created before ContactFlow so the flow can reference the
 // context-injection Lambda's ARN when contextInjectionEnabled.
 const flowLambdas = new ConnectFlowLambdasStack(app, `${stackPrefix}-FlowLambdas`, {
@@ -107,7 +100,7 @@ const flow = new ContactFlowStack(app, `${stackPrefix}-ContactFlow`, {
   env,
   instanceArn: instance.instanceArn,
   instanceId: instance.instanceId,
-  lexBotAliasArn: lex.botAliasArn,
+  lexBotAliasArn: wisdom.botAliasArn,
   assistantArn: wisdom.assistantArn,
   orchestrationAgentArn: wisdom.orchestrationAgentArn,
   queueArn: queues.defaultQueueArn,
@@ -119,7 +112,6 @@ const flow = new ContactFlowStack(app, `${stackPrefix}-ContactFlow`, {
   profileLookupLambdaArn: flowLambdas.profileLookupFunction?.functionArn,
   recordingEnabled: config.recordingEnabled,
 });
-flow.addDependency(lex);
 flow.addDependency(wisdom);
 flow.addDependency(queues);
 // The flow invokes the context-injection / profile-lookup Lambdas, so they must
@@ -128,11 +120,18 @@ if (config.contextInjectionEnabled || config.customerProfilesEnabled) {
   flow.addDependency(flowLambdas);
 }
 
-const contactEvents = new ContactEventsStack(app, `${stackPrefix}-ContactEvents`, {
-  env,
-  connectInstanceArn: instance.instanceArn,
-});
-contactEvents.addDependency(instance);
+if (config.contactEventsEnabled) {
+  const contactEvents = new ContactEventsStack(app, `${stackPrefix}-ContactEvents`, {
+    env,
+    connectInstanceArn: instance.instanceArn,
+  });
+  contactEvents.addDependency(instance);
+} else {
+  console.log(
+    '\x1b[33m[ContactEvents]\x1b[0m Skipped — contactEventsEnabled is false. ' +
+    'Set to true to enable EventBridge contact lifecycle events.',
+  );
+}
 
 // Webcall Widget: only deploy when at least one widget is fully configured
 // Webcall Widget frontend: deploy when frontendEnabled is true.

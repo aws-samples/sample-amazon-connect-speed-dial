@@ -45,8 +45,15 @@ export class ConnectInstanceStack extends BlueprintStack {
 
     const alias = this.namer.instanceAlias();
 
+    // --- Identity management type ---
+    // When Identity Center is enabled, the Connect instance uses SAML-based
+    // identity (SSO via Identity Center). Otherwise it falls back to
+    // CONNECT_MANAGED (built-in user/password management). This decision is
+    // irreversible — identity type is fixed at instance creation time.
+    const identityManagementType = config.identityCenterEnabled ? 'SAML' : 'CONNECT_MANAGED';
+
     const instance = new connect.CfnInstance(this, 'Instance', {
-      identityManagementType: 'CONNECT_MANAGED',
+      identityManagementType,
       instanceAlias: alias,
       attributes: {
         inboundCalls: true,
@@ -73,6 +80,7 @@ export class ConnectInstanceStack extends BlueprintStack {
     const safeAttributes = [
       'AUTOMATED_INTERACTION_LOG',
       'ENABLE_BOT_ANALYTICS_AND_TRANSCRIPTS',
+      'MESSAGE_STREAMING',
     ];
 
     for (const attrType of safeAttributes) {
@@ -378,13 +386,122 @@ export class ConnectInstanceStack extends BlueprintStack {
     });
     contactEvaluationsStorage.node.addDependency(storageBucket);
 
+    const attachmentsStorage = new connect.CfnInstanceStorageConfig(this, 'AttachmentsStorage', {
+      instanceArn: instance.attrArn,
+      resourceType: 'ATTACHMENTS',
+      storageType: 'S3',
+      s3Config: s3StorageConfig('attachments'),
+    });
+    attachmentsStorage.node.addDependency(storageBucket);
+
+    const screenRecordingsStorage = new connect.CfnInstanceStorageConfig(this, 'ScreenRecordingsStorage', {
+      instanceArn: instance.attrArn,
+      resourceType: 'SCREEN_RECORDINGS',
+      storageType: 'S3',
+      s3Config: s3StorageConfig('screen-recordings'),
+    });
+    screenRecordingsStorage.node.addDependency(storageBucket);
+
+    const emailMessagesStorage = new connect.CfnInstanceStorageConfig(this, 'EmailMessagesStorage', {
+      instanceArn: instance.attrArn,
+      resourceType: 'EMAIL_MESSAGES',
+      storageType: 'S3',
+      s3Config: s3StorageConfig('email-messages'),
+    });
+    emailMessagesStorage.node.addDependency(storageBucket);
+
+    // NOTE: REAL_TIME_CONTACT_ANALYSIS_SEGMENTS, REAL_TIME_CONTACT_ANALYSIS_CHAT_SEGMENTS,
+    // and REAL_TIME_CONTACT_ANALYSIS_VOICE_SEGMENTS do NOT support S3 as storageType —
+    // they require KINESIS_STREAM or KINESIS_FIREHOSE. Omitted until Kinesis resources
+    // are provisioned (see TODO Phase B — Kinesis-based storage configs).
+
+    // --- Contact Events → EventBridge ---
+    // Amazon Connect publishes contact lifecycle events to the default
+    // EventBridge bus automatically — no instance storage config needed.
+    // The ContactEvents stack's rules match them directly.
+
     new cdk.CfnOutput(this, 'InstanceArn', { value: this.instanceArn });
     new cdk.CfnOutput(this, 'InstanceId', { value: this.instanceId });
     new cdk.CfnOutput(this, 'InstanceAlias', { value: this.instanceAlias });
+    new cdk.CfnOutput(this, 'ServiceRole', {
+      value: instance.attrServiceRole,
+      description: 'Connect service role ARN — used when configuring SAML trust in Identity Center',
+    });
     new cdk.CfnOutput(this, 'CustomerProfilesDomainName', { value: this.customerProfilesDomainName });
     new cdk.CfnOutput(this, 'StorageBucketName', { value: this.storageBucketName });
     if (storageKey) {
       new cdk.CfnOutput(this, 'StorageKmsKeyArn', { value: storageKey.keyArn });
+    }
+    new cdk.CfnOutput(this, 'IdentityManagementType', { value: identityManagementType });
+
+    // --- SAML federation resources (Identity Center) ---
+    // When using SAML identity, create the IAM SAML Provider and Federation Role
+    // needed for Identity Center SSO into Connect. These are the resources that
+    // Identity Center's attribute mapping references (Role = <FederationRoleArn>,<SamlProviderArn>).
+    if (config.identityCenterEnabled) {
+      const instanceUuid = cdk.Fn.select(1, cdk.Fn.split('instance/', this.instanceArn));
+      const relayState = `https://${this.region}.console.aws.amazon.com/connect/federate/${instanceUuid}`;
+
+      // IAM SAML Provider — created from the Identity Center SAML metadata XML.
+      // The metadata file must be downloaded from the Identity Center console
+      // (IAM Identity Center → Applications → your app → IAM Identity Center metadata → Download)
+      // and placed at `saml-metadata.xml` in the project root before deploying.
+      const samlMetadataPath = require('path').resolve(__dirname, '..', 'saml-metadata.xml');
+      if (!require('fs').existsSync(samlMetadataPath)) {
+        throw new Error(
+          'Identity Center is enabled but saml-metadata.xml is missing.\n' +
+          'Download it from: IAM Identity Center → Applications → your Connect app → ' +
+          'IAM Identity Center metadata → Download.\n' +
+          'Save it in your WORKING directory (next to .connect-skill-order.json), NOT here — ' +
+          'this project dir is generated output and re-renders would lose it. ' +
+          'render-templates.sh / redeploy.sh copy it into the rendered project automatically.\n' +
+          `(Expected rendered location: ${samlMetadataPath})`,
+        );
+      }
+
+      const samlProvider = new iam.SamlProvider(this, 'IdentityCenterSamlProvider', {
+        metadataDocument: iam.SamlMetadataDocument.fromFile(samlMetadataPath),
+        name: `${this.prefix}-IdentityCenterSamlProvider`,
+      });
+
+      // IAM Federation Role — assumed via SAML console sign-in flow.
+      // Identity Center sends a SAML assertion; AWS STS validates it against the
+      // provider above and issues temporary credentials for this role.
+      const samlFederationRole = new iam.Role(this, 'SamlFederationRole', {
+        assumedBy: new iam.SamlConsolePrincipal(samlProvider),
+        description: 'Role for SAML federation with Amazon Connect via IAM Identity Center',
+      });
+
+      // Grant the SAML role permission to get a federation token for Connect.
+      // This is the permission that lets the federated user actually access the
+      // Connect agent workspace after SAML authentication completes.
+      // The resource uses a wildcard on the user segment because Connect resolves
+      // the federated identity internally — the caller's ${aws:userid} (roleId:sessionName)
+      // must match the resource pattern, and Connect requires the instance-level
+      // wildcard to authorize the GetFederationToken call before the user is mapped.
+      samlFederationRole.addToPolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['connect:GetFederationToken'],
+        resources: [
+          cdk.Fn.join('', [this.instanceArn, '/user/*']),
+        ],
+      }));
+
+      // --- Outputs for SAML setup ---
+      new cdk.CfnOutput(this, 'SamlRelayStateUrl', {
+        value: relayState,
+        description: 'Configure this as the Relay State in your IAM Identity Center Amazon Connect application',
+      });
+
+      new cdk.CfnOutput(this, 'SamlProviderArn', {
+        value: samlProvider.samlProviderArn,
+        description: 'SAML Provider ARN — use in Identity Center Role attribute mapping (second value in the comma pair)',
+      });
+
+      new cdk.CfnOutput(this, 'SamlFederationRoleArn', {
+        value: samlFederationRole.roleArn,
+        description: 'SAML Federation Role ARN — use in Identity Center Role attribute mapping (first value in the comma pair)',
+      });
     }
 
     // --- Analytics Data Lake ---
@@ -399,6 +516,18 @@ export class ConnectInstanceStack extends BlueprintStack {
         ],
       });
       dataLake.node.addDependency(instance);
+
+      // The DataLakeAccess construct emits a fixed-name CloudFormation export
+      // 'DataLakeAccessErrors'. Export names must be unique per account/region,
+      // so that fixed name collides when multiple project instances deploy into
+      // the same account/region. Prefix it with the project name to keep each
+      // deployment's export unique. (This export is informational and not
+      // imported by any other stack, so renaming it is safe.)
+      dataLake.node.findAll().forEach((child) => {
+        if (child instanceof cdk.CfnOutput && child.exportName === 'DataLakeAccessErrors') {
+          child.exportName = `${this.prefix}-DataLakeAccessErrors`;
+        }
+      });
     }
   }
 }
