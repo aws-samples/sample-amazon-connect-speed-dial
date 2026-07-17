@@ -64,10 +64,10 @@ GW_APP_TYPE=$(jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::AppIn
 ORCH_TOOLS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Wisdom::AIAgent") | .value.Properties.Configuration.OrchestrationAIAgentConfiguration.ToolConfigurations[]? | select(.ToolId != null) | (.ToolId | tostring)] | join(",")' "$TEMPLATE_PREFIX-Wisdom.template.json")
 SP_APPS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Connect::SecurityProfile") | .value.Properties.Applications[]? | .Type] | join(",")' "$TEMPLATE_PREFIX-Wisdom.template.json")
 if [[ "$TOOL" == "true" ]]; then
-  echo "$ORCH_TOOLS" | grep -q "gateway_.*__SampleCustomerLookup___get_customer_info" || { echo "FAIL: tool enabled but gateway MCP tool not allow-listed on agent with namespace-qualified id (got: $ORCH_TOOLS)" >&2; exit 1; }
+  echo "$ORCH_TOOLS" | grep -q "gateway_.*__SapOrderLookup___get_order_status" || { echo "FAIL: tool enabled but gateway MCP tool not allow-listed on agent with namespace-qualified id (got: $ORCH_TOOLS)" >&2; exit 1; }
   echo "$SP_APPS" | grep -q "MCP" || { echo "FAIL: tool enabled but AI-agent security profile has no MCP application grant (got: $SP_APPS)" >&2; exit 1; }
 else
-  if echo "$ORCH_TOOLS" | grep -q "SampleCustomerLookup___"; then echo "FAIL: tool disabled but gateway MCP tool present on agent" >&2; exit 1; fi
+  if echo "$ORCH_TOOLS" | grep -q "SapOrderLookup___"; then echo "FAIL: tool disabled but gateway MCP tool present on agent" >&2; exit 1; fi
   if echo "$SP_APPS" | grep -q "MCP"; then echo "FAIL: tool disabled but MCP application grant present on security profile" >&2; exit 1; fi
 fi
 

@@ -14,7 +14,7 @@ import * as crypto from 'crypto';
 import { Construct } from 'constructs';
 import { BlueprintStack } from './blueprint-stack';
 import { config } from './config';
-import { SAMPLE_GATEWAY_TARGET, SAMPLE_GATEWAY_TOOLS } from './agentcore-gateway-stack';
+import { SAP_GATEWAY_TARGET, SAP_GATEWAY_TOOLS } from './agentcore-gateway-stack';
 
 /**
  * Read a prompt body from the project's `prompts/` directory.
@@ -516,8 +516,8 @@ export class WisdomStack extends BlueprintStack {
     // any attempt to override the description here.
     const gatewayToolConfigs =
       config.toolEnabled && props.gatewayNamespace
-        ? SAMPLE_GATEWAY_TOOLS.map((tool) => {
-            const mcpToolName = `${SAMPLE_GATEWAY_TARGET}___${tool}`;
+        ? SAP_GATEWAY_TOOLS.map((tool) => {
+            const mcpToolName = `${SAP_GATEWAY_TARGET}___${tool}`;
             return {
               toolName: mcpToolName,
               toolType: 'MODEL_CONTEXT_PROTOCOL',
@@ -630,8 +630,8 @@ export class WisdomStack extends BlueprintStack {
               // permission found".
               type: 'MCP',
               namespace: props.gatewayNamespace,
-              applicationPermissions: SAMPLE_GATEWAY_TOOLS.map(
-                (tool) => `${SAMPLE_GATEWAY_TARGET}___${tool}`,
+              applicationPermissions: SAP_GATEWAY_TOOLS.map(
+                (tool) => `${SAP_GATEWAY_TARGET}___${tool}`,
               ),
             },
           ]

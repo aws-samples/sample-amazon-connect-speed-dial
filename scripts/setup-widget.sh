@@ -22,7 +22,7 @@ set -euo pipefail
 #                  `region` key in .connect-skill-values.json, then us-east-1.
 #
 # NOTE: region is an explicit arg (matching SKILL.md's Branch B call and the
-# sibling create-webcall-user.sh) because build-values.sh does NOT emit `region`
+# sibling setup-test-users.sh) because build-values.sh does NOT emit `region`
 # to .connect-skill-values.json — relying on the values file alone silently
 # defaulted eu-central-1 deployments to us-east-1.
 

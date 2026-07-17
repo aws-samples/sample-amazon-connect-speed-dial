@@ -132,9 +132,9 @@ Ask: "Which add-on capabilities would you like? (You can choose multiple, or non
 
 Options (only these five are selectable in this phase):
 - **Human transfer** [Ready] — escalate to a live agent queue
-- **Tool calling** [Ready] — agent can call a Lambda (ships a sample function)
-- **Pre-call context injection** [Ready] — a Lambda runs in the flow before the agent starts and pushes caller context into the Q Connect session, so the agent knows who it's talking to from the first turn. The blueprint injects tool-aligned demo context (a known customer `CUST001` / order `ORD-12345` matching the gateway's sample tools); when enabled, the orchestration prompt also gains an instruction to use that context and the lookup tools. Real deployments replace the demo data in `lambda/flow/update-session-context/index.py` with actual lookups.
-- **Customer Profiles** [Ready, default ON] — seed a demo customer profile (Alice Johnson / `CUST001`, matching the context/tool persona) and look the caller up in the flow, surfacing the profile to the agent via `{{$.Custom.*}}`. Looks up by caller phone, then the web widget's `customerId` attribute, then a static demo phone fallback so it resolves on web-call / fresh-DID too. Defaults to **on** (the domain is already created by the instance). See "Customer Profiles" notes below for the native-block vs. Lambda decision.
+- **Tool calling** [Ready] — agent can call a Lambda (ships a SAP SD order lookup API backed by DynamoDB: order status, delivery tracking, invoice status)
+- **Pre-call context injection** [Ready] — a Lambda runs in the flow before the agent starts and pushes caller context into the Q Connect session, so the agent knows who it's talking to from the first turn. The blueprint injects tool-aligned demo context (a known order matching the gateway's SAP order lookup tools); when enabled, the orchestration prompt also gains an instruction to use that context and the lookup tools. Real deployments replace the demo data in `lambda/flow/update-session-context/index.py` with actual lookups.
+- **Customer Profiles** [Ready, default ON] — seed a demo customer profile (Alice Johnson, matching the context/tool persona) and look the caller up in the flow, surfacing the profile to the agent via `{{$.Custom.*}}`. Looks up by caller phone, then the web widget's `customerId` attribute, then a static demo phone fallback so it resolves on web-call / fresh-DID too. Defaults to **on** (the domain is already created by the instance). See "Customer Profiles" notes below for the native-block vs. Lambda decision.
 - **Call recording** [Ready] — the flow opens with a DTMF consent gate (press 1 to allow, 2 to decline); on consent the call is recorded (Agent + Customer) to the instance's `CALL_RECORDINGS` S3 storage. Off by default, since whether to record is a per-deployment privacy/compliance decision.
 - **Analytics data lake** [Ready] — enables the Connect analytics data lake, sharing contact records, contact flow events, agent statistics, and contact statistics to a Glue database via Lake Formation. Queryable with Athena. Off by default.
 - **Contact-events logging** [Ready] — deploys an EventBridge rule + Lambda that logs contact lifecycle events (all DISCONNECTED events on the instance, any channel) as structured CloudWatch data. Off by default.
@@ -376,7 +376,7 @@ The rendered project structure:
 │   ├── wisdom-stack.ts           # Q in Connect assistant + 2 AI agents (orchestrator, self-service)
 │   ├── lex-bot-stack.ts
 │   ├── contact-flow-stack.ts     # composed flow (transfer/tool branches per capability flags)
-│   ├── agentcore-gateway-stack.ts  # AgentCore MCP gateway + sample tool, registered as instance MCP server
+│   ├── agentcore-gateway-stack.ts  # AgentCore MCP gateway + SAP order lookup tool, registered as instance MCP server
 │   ├── connect-flow-lambdas-stack.ts
 │   ├── contact-events-stack.ts   # EventBridge logging
 │   ├── webcall-widget-stack.ts   # CloudFront + Cognito + API Gateway (conditional)
@@ -392,7 +392,7 @@ The rendered project structure:
 
 **Capability composition:** The contact flow is built from the base flow (`flows/nova-sonic-base.json`) with optional branches added by pure transforms in `flow-compose.ts` per the flags in `config.ts`: `transferEnabled` routes the agent's Escalate outcome to a human queue; `contextInjectionEnabled` and `customerProfilesEnabled` each insert a Lambda invocation (`provide-agent-context` / `provide-profile-context`) into a shared "precall" sequence — a standalone `CreateWisdomSession`+`UpdateContactData` runs first (so the Lambdas' DescribeContact lookup has a bound session), the Lambdas run, then the intact AI Agent compound block runs. `recordingEnabled` prepends a DTMF consent gate as the flow's entry point. The precall scaffolding (`ensurePrecallSession`/`insertPrecallLambda` in `flow-compose.ts`) is shared so context-injection and customer-profiles compose order-independently and never split the AI Agent compound. This replaces the old three-flavor approach (qa / transfer / tool) with independent, composable capabilities.
 
-**Customer Profiles:** The blueprint always creates a Customer Profiles domain on the instance. When `customerProfilesEnabled` (default on), it additionally (a) seeds one demo profile (Alice Johnson / `CUST001` / `+15550100123`, custom attrs `accountTier`, `recentOrderId`) via a `CreateProfile` custom resource in `connect-instance-stack.ts`, and (b) deploys a `profile-lookup` Lambda that `SearchProfiles` (by `_phone`, then the web `customerId` as `_account`, then the static demo phone) and bridges the result into the Q Connect session via `UpdateSessionData(namespace="Custom")` — the agent then reads it as `{{$.Custom.*}}`. **Design note / divergence:** the user asked for the *native* Customer Profiles flow block. The block's contact-flow-language `Type` string could not be verified from docs (the page renders empty) and must be captured from a console-built flow via `DescribeContactFlow`; since that needed a console session, the lookup is implemented as a `SearchProfiles` call in the Lambda instead (intent preserved — profile resolved into the agent the same way; native block deferred). The web frontend already passes `customerId` in the widget JWT (surfaces as `$.Attributes.customerId`), which the lookup uses, so the WebRTC channel is covered. **User-facing guide** (how it works, how to create a profile for a Cognito user, and how it overlaps with context injection): `references/customer-profiles.md`.
+**Customer Profiles:** The blueprint always creates a Customer Profiles domain on the instance. When `customerProfilesEnabled` (default on), it additionally (a) seeds one demo profile (Alice Johnson / `0000100042` / `+15550100123`, custom attrs `accountTier`, `recentOrderId`) via a `CreateProfile` custom resource in `connect-instance-stack.ts`, and (b) deploys a `profile-lookup` Lambda that `SearchProfiles` (by `_phone`, then the web `customerId` as `_account`, then the static demo phone) and bridges the result into the Q Connect session via `UpdateSessionData(namespace="Custom")` — the agent then reads it as `{{$.Custom.*}}`. **Design note / divergence:** the user asked for the *native* Customer Profiles flow block. The block's contact-flow-language `Type` string could not be verified from docs (the page renders empty) and must be captured from a console-built flow via `DescribeContactFlow`; since that needed a console session, the lookup is implemented as a `SearchProfiles` call in the Lambda instead (intent preserved — profile resolved into the agent the same way; native block deferred). The web frontend already passes `customerId` in the widget JWT (surfaces as `$.Attributes.customerId`), which the lookup uses, so the WebRTC channel is covered. **User-facing guide** (how it works, how to create a profile for a Cognito user, and how it overlaps with context injection): `references/customer-profiles.md`.
 
 **Call recording (opt-in, `recordingEnabled`):** When enabled, `applyRecordingConsent` (in `flow-compose.ts`) prepends a DTMF consent gate — a `GetParticipantInput` block (`recording-consent`) becomes the flow's `StartAction`, asking the caller to press 1 to allow recording or 2 to decline. Press 1 → `enable-recording`; press 2 / timeout / no-match → `disable-recording`; both converge on the flow's original start (`enable-logs`) so the rest of the flow is unchanged. Recording uses `UpdateContactRecordingAndAnalyticsBehavior`; the enable path records `Agent` + `Customer` with **`IVRRecordingBehavior: Enabled`** — that IVR/automated-interaction setting is required for audio to be captured in this AI-agent (automated) flow, and recordings land in the instance's `CALL_RECORDINGS` S3 storage (configured in `connect-instance-stack.ts`). The consent prompt's company name is rendered from `{{companyName}}` via the `__COMPANY_NAME__` placeholder, mirroring the greeting. The gate sits entirely upstream of the AI Agent compound block and the context-injection actions, so it composes independently.
 
@@ -402,14 +402,14 @@ When `toolEnabled` is true, the blueprint wires the AgentCore gateway's tools in
 
 1. **MCP server integration** (`AgentCoreGatewayStack`) — the gateway is registered with the instance via an AppIntegrations `CfnApplication` (`applicationType: 'MCP_SERVER'`, `accessUrl` = the gateway's `https://<gatewayId>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp` endpoint) plus a Connect `CfnIntegrationAssociation` (`integrationType: 'APPLICATION'`, `instanceId` = the instance **ARN**). The application's `namespace` is set to the bare gateway id. This is the CDK equivalent of the console's **Add integration → MCP server** flow; `CreateIntegrationAssociation` has no dedicated MCP type — `APPLICATION` is correct (the API docs prose omits it, but the enum includes it).
 
-2. **Security-profile grant** (`WisdomStack`) — the AI-agent `CfnSecurityProfile` carries an `applications` entry with **`type: 'MCP'`** (required — without it Connect treats it as a third-party app that only accepts `ACCESS` and rejects the tool ids with "Invalid application permission found"), `namespace` = the gateway id, and `applicationPermissions` = the AgentCore tool names (`<target>___<tool>`, e.g. `SampleCustomerLookup___get_customer_info`). Without this grant the Agent Designer shows "Insufficient Permissions" and the agent update is rejected.
+2. **Security-profile grant** (`WisdomStack`) — the AI-agent `CfnSecurityProfile` carries an `applications` entry with **`type: 'MCP'`** (required — without it Connect treats it as a third-party app that only accepts `ACCESS` and rejects the tool ids with "Invalid application permission found"), `namespace` = the gateway id, and `applicationPermissions` = the AgentCore tool names (`<target>___<tool>`, e.g. `SapOrderLookup___get_order_status`). Without this grant the Agent Designer shows "Insufficient Permissions" and the agent update is rejected.
 
 3. **Agent tool allow-list** (`WisdomStack`) — each tool is a `MODEL_CONTEXT_PROTOCOL` entry in the orchestrator's `toolConfigurations`:
-   - `toolName`: the AgentCore tool name, `<target>___<tool>` (e.g. `SampleCustomerLookup___get_customer_info`)
-   - `toolId`: the **namespace-qualified** id, `gateway_<gatewayId>__<target>___<tool>` (e.g. `gateway_finalreview-gateway-odaj4wxasg__SampleCustomerLookup___get_customer_info`). This mirrors the built-in Retrieve tool's `aws_service__qconnect_Retrieve` (`<namespace>__<tool>`). Using the bare `<target>___<tool>` as the id fails with "MCP tool with ID … not found in MCP tools".
+   - `toolName`: the AgentCore tool name, `<target>___<tool>` (e.g. `SapOrderLookup___get_order_status`)
+   - `toolId`: the **namespace-qualified** id, `gateway_<gatewayId>__<target>___<tool>` (e.g. `gateway_finalreview-gateway-odaj4wxasg__SapOrderLookup___get_order_status`). This mirrors the built-in Retrieve tool's `aws_service__qconnect_Retrieve` (`<namespace>__<tool>`). Using the bare `<target>___<tool>` as the id fails with "MCP tool with ID … not found in MCP tools".
    - Do **not** set `description` on a gateway-sourced MCP tool — it's owned by the MCP server and QConnect rejects an override (400).
 
-   AgentCore namespaces a Lambda target's tools as `<targetName>___<toolName>` (the sample tool Lambda parses the trailing `___` segment of `bedrockAgentCoreToolName`).
+   AgentCore namespaces a Lambda target's tools as `<targetName>___<toolName>` (the SAP order tool Lambda parses the trailing `___` segment of `bedrockAgentCoreToolName`). The gateway exposes three tools via this target: `get_order_status`, `get_delivery_tracking`, and `get_invoice_status`, backed by a DynamoDB table seeded with sample SAP SD order-to-cash data.
 
 **Ordering:** `WisdomStack` depends on `AgentCoreGatewayStack` when `toolEnabled` (the gateway must be a registered MCP server on the instance before the agent that references its tools is created). To re-capture these strings if AWS changes the schema: configure the tools on an agent in the console, **publish** the agent version, then `aws qconnect get-ai-agent …` and `aws connect list-security-profile-applications …` and read the live `toolId` / `applicationPermissions`. (Note: the console's draft must be **published** before the API reflects the new tools.)
 
@@ -436,7 +436,7 @@ This deploys **nine stacks** (always deployed):
 3. **Wisdom** - Q in Connect assistant with knowledge base and two AI agents (orchestrator, self-service)
 4. **LexBot** - Lex bot for voice input (wired to the Wisdom assistant)
 5. **ContactFlow** - contact flow with AI Agent block (composed from base + capability branches)
-6. **AgentCoreGateway** - Bedrock AgentCore MCP gateway + sample Lambda tool target, registered with the instance as an MCP server integration (AppIntegrations `MCP_SERVER` application + Connect `APPLICATION` association). When `toolEnabled` is true, the Wisdom stack additionally (a) allow-lists the gateway's tools on the orchestration AI agent and (b) grants them on the AI-agent security profile. See "AgentCore MCP tool integration" below for the exact wiring.
+6. **AgentCoreGateway** - Bedrock AgentCore MCP gateway + SAP order lookup Lambda target (DynamoDB-backed order status, delivery tracking, and invoice status tools), registered with the instance as an MCP server integration (AppIntegrations `MCP_SERVER` application + Connect `APPLICATION` association). When `toolEnabled` is true, the Wisdom stack additionally (a) allow-lists the gateway's tools on the orchestration AI agent and (b) grants them on the AI-agent security profile. See "AgentCore MCP tool integration" below for the exact wiring.
 7. **FlowLambdas** - Lambda functions for contact-flow use. The `DescribeContact` helper is always deployed; the `UpdateSessionContext` Lambda (pre-call context injection) is deployed **only when `contextInjectionEnabled`** (invoked by `provide-agent-context`); the `ProfileLookup` Lambda is deployed **only when `customerProfilesEnabled`** (invoked by `provide-profile-context`). Each is associated with the instance when present.
 8. **ContactEvents** - EventBridge logging for contact events
 9. **PostDeploy** - Custom Resource to set default AI agents on the assistant
@@ -762,28 +762,29 @@ Then walk the user through widget creation and offer to wire it up automatically
 
    Delete the temp embed file afterward (it contains the snippet, not a secret, but keep the working dir clean). **Never echo the security key** back to the user or write it to a tracked file.
 
-4. After the script succeeds, create the sign-in login. The site's Cognito pool has self-signup disabled, so the login must be admin-created — do this for the user instead of sending them to the console. Ask for a username and email (offer to auto-generate the password), then run:
+4. After the script succeeds, create the sign-in login and customer profile. The site's Cognito pool has self-signup disabled, so the login must be admin-created — do this for the user instead of sending them to the console. Ask for a username, first name, last name, email, phone (E.164), and SAP customer number, then run:
 
    ```bash
-   <skill-dir>/scripts/create-webcall-user.sh \
+   <skill-dir>/scripts/setup-test-users.sh \
      <cwd>/<projectName> \
      <username> \
+     <first-name> \
+     <last-name> \
      <email> \
-     <password> \
+     <phone-e164> \
+     <customer-number> \
      <region>
    ```
 
-   (Pass `""` for the password to auto-generate one; the region is the final argument.)
-
    The script (idempotent):
-   - Reads the `UserPoolId` from `cdk-outputs.json`
-   - Creates the user (email pre-verified, no invite email sent) or updates the password if it already exists
-   - Sets a **permanent** password (no forced change) so the user can sign in immediately
-   - If no password is given, generates a policy-compliant one and prints it — relay it to the user once and note it isn't stored anywhere
+   - If a WebcallWidget stack exists: creates the Cognito user (temporary password emailed, must be changed on first sign-in) or resends the invitation if the user already exists
+   - Creates (or updates) a matching Customer Profile with the user's identity, phone, email, and SAP customer number — so the AI agent resolves the caller's profile and enforces per-user order access control
+   - If no WebcallWidget stack is found (phone-only deploy): skips Cognito and creates only the Customer Profile (resolved by ANI)
 
    Then tell the user:
-   > Your web-call site is live at `<cloudfront-url>`. Sign in with the username
-   > and password above, then click to call your AI agent in the browser.
+   > Your web-call site is live at `<cloudfront-url>`. A temporary password was
+   > emailed to `<email>` — sign in with that username and set a new password,
+   > then click to call your AI agent in the browser.
 
 5. **Activate tool calling (only when `toolEnabled`).** Walk the user through publishing the
    orchestration agent — see "Activate tool calling — publish the orchestration agent" above.
@@ -857,23 +858,24 @@ After deployment, the user can change the orchestration or self-service prompt a
 
 **Only run this walkthrough if the instance was deployed with `customerProfilesEnabled`** (check `.connect-skill-values.json`). If it's off, skip — there is no profile lookup in the flow.
 
-After a deploy with Customer Profiles on, **offer** (don't force) to create a profile so the agent greets a real, known caller instead of the seeded demo customer. Explain it briefly first:
+After a deploy with Customer Profiles on, **offer** (don't force) to create a test user so the agent greets a real, known caller instead of the seeded demo customer. Explain it briefly first:
 
-> Your flow looks the caller up in Customer Profiles and tells the AI agent who they are (name, account, tier) and their recent activity (last order, status, open cases). Right now there's one **demo** profile (Alice Johnson / CUST001). Want me to create a profile for one of your users so the agent greets *them*? For the **web-call** app, I can tie it to a signed-in user automatically.
+> Your flow looks the caller up in Customer Profiles and tells the AI agent who they are (name, email, customer number). The agent then uses that customer number to fetch their orders, deliveries, and invoices live from the sample SAP order API. Right now there's one **demo** profile (Alice Johnson, customer `0000100042`, who owns the seeded sample orders). Want me to create a test user for one of your people so the agent greets *them*? For the **web-call** app, this also creates the Cognito sign-in (temporary password delivered by email).
 
-If the user declines, stop. If they accept, collect: first/last name, and either a **web-call username** (recommended — I'll resolve its Cognito `sub` as the lookup key) or a **phone number** for a voice caller; optionally tier, recent order id + status, open-case count. Then run the helper (it reads the domain + user pool from `cdk-outputs.json`, is idempotent, and never needs the AWS console):
+If the user declines, stop. If they accept, collect: a username, first/last name, an email address (the temporary password is emailed there), a phone number (E.164, for voice-caller lookup), and a customer number (use `0000100042` if they want the seeded sample orders tied to their user; any other value means the SAP tools will find no orders for them). Then run the helper (it reads the domain + user pool from `cdk-outputs.json`, is idempotent, and never needs the AWS console):
 
 ```bash
-<skill-dir>/scripts/create-customer-profile.sh <cwd>/<projectName> \
-  --first <First> --last <Last> \
-  --cognito-username <webcallUser>   # OR: --account <id> --phone <+E164> \
-  --tier <Premium|Gold|...> --order-id <ORD-...> --order-status <Shipped|...> --open-cases <n>
+<skill-dir>/scripts/setup-test-users.sh <cwd>/<projectName> \
+  <username> <First> <Last> <email> <+E164-phone> <customer-number> <region>
 ```
 
+If the WebcallWidget stack is not deployed, the script skips Cognito and creates only the Customer Profile (phone-only deployments — the caller is then resolved by phone number).
+
 How it works end to end:
-- The profile stores both **identity** (name → `customerName`, account number → `customerId`, `accountTier`) and **recent-activity** custom attributes (`recentOrderId`, `orderStatus`, `openCaseCount`).
-- On a call, the `profile-lookup` Lambda finds the caller (by phone, or by the web widget's Cognito `sub` searched as `_account`) and injects **all** of it into the Q Connect session, where the agent reads it as `{{$.Custom.*}}`. This runs **after** context injection, so a matched profile **overrides** the demo baseline; with no match, the agent falls back to the demo context.
-- No redeploy is needed — profiles are data. Tell the user to call (voice from the given number, or the web-call app signed in as that user) and the agent will greet them by name.
+- The profile stores **identity** (name, email, phone, and the customer number as a custom attribute). The Cognito user's `sub` becomes the profile's `AccountNumber` — the web-call lookup key.
+- On a call, the `profile-lookup` Lambda finds the caller (by phone, by the widget's email attribute, or by the Cognito `sub` searched as `_account`) and injects the profile into the Q Connect session, where the agent reads it as `{{$.Custom.*}}`. This runs **after** context injection, so a matched profile **overrides** the demo baseline; with no match, the agent falls back to the demo context.
+- **Recent activity (orders, deliveries, invoices) is no longer stored on the profile** — the agent fetches it live from the SAP mock API using the profile's customer number (`{{$.Custom.customerId}}`), which the tools require for access control. (The legacy activity attributes — `accountTier`, `recentOrderId`, `orderStatus`, `openCaseCount` — are still bridged into the session if present on a profile, e.g. the seeded demo one, but the helper script no longer sets them.)
+- No redeploy is needed — profiles are data. Tell the user to call (voice from the given number, or the web-call app signed in as that user after completing the emailed first-login password change) and the agent will greet them by name.
 
 Full reference (model, fields, the Cognito tie-in, and how this composes with context injection): `references/customer-profiles.md`.
 

@@ -169,8 +169,7 @@ tests/test-all-capabilities.sh  # render + cdk synth for every transfer × tool 
 │   ├── validate-prompts.sh     # Check prompts keep required scaffolding
 │   ├── claim-uk-did.sh         # UK DID search/claim/associate
 │   ├── setup-widget.sh         # Wire up the web-call widget
-│   ├── create-webcall-user.sh  # Create the Cognito sign-in user
-│   ├── create-customer-profile.sh # Create a Customer Profile (+ injected context) for a user
+│   ├── setup-test-users.sh    # Create Cognito user + Customer Profile (or profile-only if no frontend)
 │   └── smoke-test.sh           # Post-deploy health checks
 ├── templates/cdk-app/          # CDK project template (source of truth)
 │   ├── bin/connect-blueprint.ts
