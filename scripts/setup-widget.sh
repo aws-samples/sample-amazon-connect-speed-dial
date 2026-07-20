@@ -40,9 +40,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_TS="$PROJECT_DIR/lib/config.ts"
 
-# Resolve region: explicit arg wins, else the values file (which build-values.sh
-# does not populate with `region`), else us-east-1.
-VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
+# Resolve region: explicit arg wins, else the values file, else us-east-1.
+# Values file lives in the project dir (project-scoped); the repo-root location
+# is the legacy fallback for deployments created before project scoping.
+VALUES_FILE="$PROJECT_DIR/.connect-skill-values.json"
+[[ -f "$VALUES_FILE" ]] || VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
 if [[ -n "$REGION_ARG" ]]; then
   REGION="$REGION_ARG"
 elif [[ -f "$VALUES_FILE" ]]; then

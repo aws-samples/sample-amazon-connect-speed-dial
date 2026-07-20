@@ -81,7 +81,10 @@ REGION_ARG="${8:-}"
 # would query the wrong region's resources with no useful error.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
+# Project-scoped values first (<project-dir>/.connect-skill-values.json);
+# repo-root location is the legacy fallback for pre-project-scoping deployments.
+VALUES_FILE="$PROJECT_DIR/.connect-skill-values.json"
+[[ -f "$VALUES_FILE" ]] || VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
 if [[ -n "$REGION_ARG" ]]; then
   REGION="$REGION_ARG"
 elif [[ -f "$VALUES_FILE" ]]; then

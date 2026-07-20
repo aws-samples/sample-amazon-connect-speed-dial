@@ -55,6 +55,52 @@ The skill walks you through six phases interactively:
 5. **Claim UK DID** _(optional)_ — searches and associates a UK phone number; skip this if you want to claim a different country or pick a specific number yourself in the console
 6. **Smoke test** — verifies all resources are healthy
 
+### Deterministic deployment (no coding assistant)
+
+Prefer a plain script over an AI assistant? `scripts/deploy.py` (Python 3, stdlib-only) runs
+the identical flow deterministically: it interviews you (same questions, same defaults as the
+skill), writes the same order file, and drives the same scripts — so deployments are
+reproducible from either front door, and you can switch between them freely.
+
+**Quickstart — deploy an AI contact center (copy-paste):**
+
+Prerequisites (one-time): AWS credentials with admin access configured in your shell,
+Node.js 18+, Python 3.9+, and [Bedrock model access](#prerequisites) enabled in the target
+region. The script handles CDK bootstrap itself.
+
+```bash
+git clone https://github.com/aws-samples/sample-amazon-connect-speed-dial.git
+cd sample-amazon-connect-speed-dial
+scripts/deploy.py
+```
+
+Answer the interview questions (or press Enter to accept the defaults) — about 3–5 minutes
+later you have a working AI contact center, verified by an automatic smoke test, plus a
+personalized checklist for anything that needs the console. For a zero-question deployment
+with all defaults (us-east-1, English, feminine voice, no add-ons):
+
+```bash
+scripts/deploy.py --express -p my-contact-center
+```
+
+Tip: answer the "How will you reach the agent?" question with **(a) UK phone number** for a
+dialable number claimed automatically, or **(b) web-call frontend** for browser-based calling
+(finished with one console step from the printed checklist). Express mode picks manual, so
+you'd claim a number in the console afterwards.
+
+All modes:
+
+```bash
+scripts/deploy.py                                  # interactive interview
+scripts/deploy.py --express -p myproject           # all defaults
+scripts/deploy.py --order-file .connect-skill-order.myproject.json   # non-interactive / CI
+scripts/deploy.py --order-file ... --synth-only    # render + synth only, no AWS resources
+```
+
+Console-dependent steps (web-call widget, Identity Center app config) can't be scripted; the
+CLI finishes with a personalized checklist telling you exactly which file to create and which
+helper script to run for each.
+
 ### Why UK by default?
 
 UK DIDs are the only number type the skill claims automatically because they have the lightest regulatory footprint of the supported regions — Connect's `ClaimPhoneNumber` API accepts them with no address bundle, so the flow can complete unattended. Numbers in most other countries (and UK toll-free / mobile) require a regulatory address attached at claim time, which is much easier to handle in the Connect admin console. If you want one of those, skip Phase 5 and claim manually:
@@ -132,16 +178,16 @@ The skill produces these files in your working directory:
 
 | File | Purpose |
 |------|---------|
-| `.connect-skill-values.json` | Your deployment configuration (account-specific, gitignored) |
-| `<projectName>/` | The rendered CDK project (generated output, gitignored) |
-| `<projectName>/cdk-outputs.json` | Stack outputs with resource IDs after deployment |
+| `csp-<projectName>/.connect-skill-values.json` | Your deployment configuration (generated, lives in the project dir) |
+| `csp-<projectName>/` | The rendered CDK project (generated output; the `csp-` prefix makes it gitignorable as `csp-*/`) |
+| `csp-<projectName>/cdk-outputs.json` | Stack outputs with resource IDs after deployment |
 
 These are gitignored by default. The rendered CDK project is self-contained — you can `cd` into it and run `cdk deploy`, `cdk diff`, or `cdk destroy` independently.
 
 ## Tear down
 
 ```bash
-cd <projectName>
+cd csp-<projectName>
 npx cdk destroy --all
 ```
 

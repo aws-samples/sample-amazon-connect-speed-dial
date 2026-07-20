@@ -213,7 +213,7 @@ Default: `(a) Connect-managed` (accept default in express mode).
      add the **Amazon Connect** catalog application (or a custom SAML 2.0 app)
   2. Download the **IAM Identity Center SAML metadata file** for that application
   3. Save it as **`saml-metadata.xml`** in the current working directory (next to
-     `.connect-skill-order.json`)
+     `.connect-skill-order.<projectName>.json`)
 
   The CDK synth creates the IAM SAML Provider from this file and **fails without it** —
   preflight (Phase 2) verifies the file exists before any deploy is attempted. The user can
@@ -266,7 +266,7 @@ Capture the account ID for the order summary. The confirmation is included in "P
 
 After the user confirms the order, create two files:
 
-1. **Write the order object** to `.connect-skill-order.json` in the current working directory:
+1. **Write the order object** to `.connect-skill-order.<projectName>.json` in the current working directory (the project-suffixed name lets multiple deployments coexist without clobbering each other's orders):
 
 ```json
 {
@@ -295,8 +295,8 @@ Note: All values except `projectName` are optional in the order file. The writer
 
 ```bash
 <skill-dir>/scripts/build-values.sh \
-  <cwd>/.connect-skill-order.json \
-  <cwd>/.connect-skill-values.json
+  <cwd>/.connect-skill-order.<projectName>.json \
+  <cwd>/csp-<projectName>/.connect-skill-values.json
 ```
 
 The writer script:
@@ -310,7 +310,7 @@ The writer script:
   to the values file so `render-templates.sh` can hardcode it into `bin/connect-blueprint.ts`
   (pinning the deploy region); it also drives `CDK_DEFAULT_REGION`/`AWS_REGION` and the helper
   scripts.
-- Emits a schema-validated `.connect-skill-values.json`
+- Emits a schema-validated `.connect-skill-values.json` **into the project directory** (`<cwd>/csp-<projectName>/`) — the values file is a generated artifact scoped to its deployment, so parallel projects never overwrite each other; `build-values.sh` creates the directory if needed
 
 The `claimUkDid` boolean is **not** stored in either JSON file — it controls skill orchestration only (whether to run Phase 5) and is not consumed by the templates.
 
@@ -319,7 +319,7 @@ The `claimUkDid` boolean is **not** stored in either JSON file — it controls s
 Run preflight checks to validate the environment:
 
 ```bash
-<skill-dir>/scripts/preflight.sh <region> <cwd>/.connect-skill-order.json
+<skill-dir>/scripts/preflight.sh <region> <cwd>/.connect-skill-order.<projectName>.json
 ```
 
 (The order-file argument is optional but always pass it — it enables the Identity Center
@@ -351,13 +351,15 @@ Render the CDK app from templates:
 
 ```bash
 <skill-dir>/scripts/render-templates.sh \
-  <cwd>/.connect-skill-values.json \
+  <cwd>/csp-<projectName>/.connect-skill-values.json \
   <skill-dir>/templates/cdk-app \
-  <cwd>/<projectName>
+  <cwd>/csp-<projectName>
 ```
 
 This script:
-- Copies all files from `templates/cdk-app` to `<cwd>/<projectName>`
+- Copies all files from `templates/cdk-app` to `<cwd>/csp-<projectName>` (the `csp-` folder
+  prefix marks generated output — one `csp-*/` gitignore entry covers every rendered project;
+  AWS resource names are NOT prefixed, they use the bare `projectName` via `config.prefix`)
 - Carries `saml-metadata.xml` from the working dir into the rendered project root when present
   (Identity Center deployments — `connect-instance-stack.ts` reads it at synth time; the
   working-dir copy is the source of truth and survives re-renders, like custom prompts)
@@ -366,7 +368,7 @@ This script:
 
 The rendered project structure:
 ```
-<projectName>/
+csp-<projectName>/
 ├── bin/connect-blueprint.ts      # app entry: wires stacks, derives stack-ID namespace from prefix
 ├── lib/
 │   ├── config.ts                 # single source of truth: prefix (= projectName), capability flags
@@ -418,7 +420,7 @@ When `toolEnabled` is true, the blueprint wires the AgentCore gateway's tools in
 Deploy the CDK stacks:
 
 ```bash
-cd <cwd>/<projectName>
+cd <cwd>/csp-<projectName>
 npm install
 AWS_REGION=<region> CDK_DEFAULT_REGION=<region> npx cdk deploy --all --require-approval never --outputs-file cdk-outputs.json
 ```
@@ -696,7 +698,7 @@ Your Nova Sonic 2 AI voice agent is live!
 ▶ CALL IT NOW:  <phone-number>
 
 Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/<projectName>
+Project Dir:    <cwd>/csp-<projectName>
 
 Next Steps:
 1. Call <phone-number> to talk to the AI agent
@@ -704,7 +706,7 @@ Next Steps:
 3. Adjust the contact flow in the Connect console
 
 To tear down:
-  cd <cwd>/<projectName>
+  cd <cwd>/csp-<projectName>
   npx cdk destroy --all
 ```
 
@@ -729,7 +731,7 @@ Your Nova Sonic 2 AI voice agent is deployed!
   (one quick setup step needed before it can call — I'll do it for you below)
 
 Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/<projectName>
+Project Dir:    <cwd>/csp-<projectName>
 ```
 
 Then walk the user through widget creation and offer to wire it up automatically:
@@ -748,7 +750,7 @@ Then walk the user through widget creation and offer to wire it up automatically
 
    ```bash
    <skill-dir>/scripts/setup-widget.sh \
-     <cwd>/<projectName> \
+     <cwd>/csp-<projectName> \
      <cwd>/.widget-embed.txt \
      '<security-key>' \
      <region>
@@ -766,7 +768,7 @@ Then walk the user through widget creation and offer to wire it up automatically
 
    ```bash
    <skill-dir>/scripts/setup-test-users.sh \
-     <cwd>/<projectName> \
+     <cwd>/csp-<projectName> \
      <username> \
      <first-name> \
      <last-name> \
@@ -794,7 +796,7 @@ If the user prefers to do it manually, they can edit `config.connectWidgets` in 
 
 ```
 To tear down:
-  cd <cwd>/<projectName>
+  cd <cwd>/csp-<projectName>
   npx cdk destroy --all
 ```
 
@@ -812,7 +814,7 @@ Your Nova Sonic 2 AI voice agent is deployed!
   2. Claim a number, then set its contact flow to "<projectName>-nova-sonic"
 
 Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/<projectName>
+Project Dir:    <cwd>/csp-<projectName>
 
 Next Steps:
 1. Attach a number (above), then call it to talk to the AI agent
@@ -820,7 +822,7 @@ Next Steps:
 3. Adjust the contact flow in the Connect console
 
 To tear down:
-  cd <cwd>/<projectName>
+  cd <cwd>/csp-<projectName>
   npx cdk destroy --all
 ```
 
@@ -844,11 +846,11 @@ After deployment, the user can change the orchestration or self-service prompt a
 
    ```bash
    <skill-dir>/scripts/render-templates.sh \
-     <cwd>/.connect-skill-values.json \
+     <cwd>/csp-<projectName>/.connect-skill-values.json \
      <skill-dir>/templates/cdk-app \
-     <cwd>/<projectName>
+     <cwd>/csp-<projectName>
 
-   cd <cwd>/<projectName>
+   cd <cwd>/csp-<projectName>
    npx cdk deploy <projectName>-Wisdom --require-approval never --outputs-file cdk-outputs.json
    ```
 
@@ -856,7 +858,7 @@ After deployment, the user can change the orchestration or self-service prompt a
 
 ## Creating customer profiles (post-deploy)
 
-**Only run this walkthrough if the instance was deployed with `customerProfilesEnabled`** (check `.connect-skill-values.json`). If it's off, skip — there is no profile lookup in the flow.
+**Only run this walkthrough if the instance was deployed with `customerProfilesEnabled`** (check `<projectName>/.connect-skill-values.json`). If it's off, skip — there is no profile lookup in the flow.
 
 After a deploy with Customer Profiles on, **offer** (don't force) to create a test user so the agent greets a real, known caller instead of the seeded demo customer. Explain it briefly first:
 
@@ -865,7 +867,7 @@ After a deploy with Customer Profiles on, **offer** (don't force) to create a te
 If the user declines, stop. If they accept, collect: a username, first/last name, an email address (the temporary password is emailed there), a phone number (E.164, for voice-caller lookup), and a customer number (use `0000100042` if they want the seeded sample orders tied to their user; any other value means the SAP tools will find no orders for them). Then run the helper (it reads the domain + user pool from `cdk-outputs.json`, is idempotent, and never needs the AWS console):
 
 ```bash
-<skill-dir>/scripts/setup-test-users.sh <cwd>/<projectName> \
+<skill-dir>/scripts/setup-test-users.sh <cwd>/csp-<projectName> \
   <username> <First> <Last> <email> <+E164-phone> <customer-number> <region>
 ```
 
@@ -903,5 +905,6 @@ For partial deployments (e.g., CDK deploy succeeds but claim-uk-did fails):
 - **Capability composition**: The old three-flavor system (qa / transfer / tool) has been replaced with independent capability flags (`transferEnabled`, `toolEnabled`). Transfer and tool-calling branches are composed into the contact flow at CDK synth time, so any combination (none, transfer-only, tool-only, both) produces a valid deployment.
 - **Cost**: Deployed resources incur AWS charges. Remind users to run `cdk destroy --all` when done testing.
 - **Idempotency**: All scripts are idempotent. Rerunning is safe.
-- **Values JSON**: The `.connect-skill-values.json` file (generated by `build-values.sh` from `.connect-skill-order.json`) is stored in the user's working directory and can be reused for multiple deployments.
+- **Values JSON**: `<projectName>/.connect-skill-values.json` (generated by `build-values.sh` from `.connect-skill-order.<projectName>.json`) lives inside the project directory. It is a derived artifact — edit the order and re-run `build-values.sh` rather than editing values by hand. Helper scripts resolve it from the project dir first, with the legacy repo-root location as fallback for older deployments.
+- **Deterministic alternative**: `scripts/deploy.py` runs this exact flow (same order file, same scripts) as a plain Python CLI — no coding assistant needed. Users can switch between the skill and the CLI freely; see README.
 - **Skill Directory**: Always use `<skill-dir>` to reference scripts/templates. Never hard-code paths.
