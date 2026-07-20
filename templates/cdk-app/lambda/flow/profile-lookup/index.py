@@ -16,9 +16,11 @@ agent can read it via the `{{$.Custom.<key>}}` prompt syntax.
 
 Lookup key resolution (first match wins):
   1. The caller's phone number (voice contacts with an ANI).
-  2. A `customerId` contact attribute (set by the web-call widget JWT — surfaces
+  2. An `email` or `emailAddress` contact attribute (web-call / chat widgets
+     pass the authenticated user's email) → searched as the `_email` key.
+  3. A `customerId` contact attribute (set by the web-call widget JWT — surfaces
      as $.Attributes.customerId) → searched as the `_account` key.
-  3. A static demo phone (DEMO_PROFILE_PHONE env) → resolves the seeded demo
+  4. A static demo phone (DEMO_PROFILE_PHONE env) → resolves the seeded demo
      profile on web-call / fresh-DID contacts with no real match.
 
 Bridge: Customer Profiles results live in the contact-attribute namespace
@@ -64,9 +66,12 @@ def _search(domain: str, key_name: str, value: str) -> dict | None:
             DomainName=domain, KeyName=key_name, Values=[value]
         )
     except Exception as e:  # noqa: BLE001 — lookups must never hard-fail the call
-        # Log only the exception type, never the exception message: it can echo
         # the search value (a phone number via _phone or account id via _account).
-        logger.warning("SearchProfiles failed (key=%s): %s", key_name, type(e).__name__)
+        # Include the AWS error code (e.g. AccessDeniedException — the KMS-CMK
+        # permission failure mode) so the failure class is self-evident in logs.
+        # Still never the exception MESSAGE: it can echo the searched value (PII).
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "") if hasattr(e, "response") else ""
+        logger.warning("SearchProfiles failed (key=%s): %s %s", key_name, type(e).__name__, code)
         return None
     items = resp.get("Items", [])
     # Log the key name and match count only — never the search value, which can
@@ -76,7 +81,15 @@ def _search(domain: str, key_name: str, value: str) -> dict | None:
 
 
 def _resolve_profile(domain: str, contact_data: dict, attributes: dict) -> dict | None:
-    """Resolve the caller's profile via phone, then customerId, then demo fallback."""
+    """Resolve the caller's profile via phone, email, customerId, then demo fallback.
+
+    Lookup key resolution (first match wins):
+      1. Caller phone number (voice ANI) → _phone search.
+      2. Email attribute (web-call / chat widget passes email as a contact
+         attribute) → _email search.
+      3. customerId attribute from the web-call widget JWT → _account search.
+      4. Static demo phone fallback (DEMO_PROFILE_PHONE env).
+    """
     # 1. Caller phone (voice ANI).
     endpoint = contact_data.get("CustomerEndpoint") or {}
     phone = endpoint.get("Address", "")
@@ -84,13 +97,19 @@ def _resolve_profile(domain: str, contact_data: dict, attributes: dict) -> dict 
     if profile:
         return profile
 
-    # 2. customerId attribute from the web-call widget JWT (searched as _account).
+    # 2. Email attribute (web-call / chat — passed as a contact attribute).
+    email = attributes.get("email", "") or attributes.get("emailAddress", "")
+    profile = _search(domain, "_email", email)
+    if profile:
+        return profile
+
+    # 3. customerId attribute from the web-call widget JWT (searched as _account).
     customer_id = attributes.get("customerId", "")
     profile = _search(domain, "_account", customer_id)
     if profile:
         return profile
 
-    # 3. Static demo fallback so the demo profile resolves with no real key.
+    # 4. Static demo fallback so the demo profile resolves with no real key.
     demo_phone = os.environ.get("DEMO_PROFILE_PHONE", "")
     return _search(domain, "_phone", demo_phone)
 
@@ -127,9 +146,15 @@ def handler(event: dict, context: Any) -> dict:
     # demo baseline. Custom attributes live under profile['Attributes'].
     attrs = profile.get("Attributes") or {}
     full_name = " ".join(p for p in [profile.get("FirstName"), profile.get("LastName")] if p)
+    # customerId resolution: prefer the explicit customerNumber attribute (set by
+    # setup-test-users.sh / ingested SAP data) — this is the SAP KUNNR that the
+    # tool Lambda uses for access control. Fall back to AccountNumber (Cognito sub
+    # for web-call users, or the seeded demo value) only when customerNumber is
+    # absent, preserving backward compat with the demo profile.
+    customer_id = attrs.get("customerNumber") or profile.get("AccountNumber", "")
     fields = {
         "customerName": full_name,
-        "customerId": profile.get("AccountNumber", ""),
+        "customerId": customer_id,
         "accountTier": attrs.get("accountTier", ""),
         "recentOrderId": attrs.get("recentOrderId", ""),
         "orderStatus": attrs.get("orderStatus", ""),

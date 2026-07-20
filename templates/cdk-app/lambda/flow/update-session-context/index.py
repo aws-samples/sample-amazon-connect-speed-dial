@@ -69,25 +69,26 @@ def handler(event: dict, context: Any) -> dict:
     # write a DISJOINT set of {{$.Custom.*}} keys so they compose into one story
     # ("who is calling" + "what they recently did") without overwriting each
     # other. recentOrderId / orderStatus line up with the AgentCore gateway's
-    # get_order_status sample (ORD-12345 -> Shipped), so Profiles, this context,
-    # and the tools all describe one coherent customer.
+    # SAP order lookup tools (order 0000012345 -> Invoiced, seeded in the SAP
+    # orders DynamoDB table), so Profiles, this context, and the tools all
+    # describe one coherent customer.
     #
     # In production, fetch this for the resolved caller — e.g. read the
     # customerId that the profile-lookup step wrote to a contact attribute and
     # look up that customer's latest order. See references/customer-profiles.md.
     # -----------------------------------------------------------------
     session_data = [
-        {"key": "recentOrderId", "value": {"stringValue": "ORD-12345"}},
-        {"key": "orderStatus", "value": {"stringValue": "Shipped"}},
+        {"key": "recentOrderId", "value": {"stringValue": "0000012345"}},
+        {"key": "orderStatus", "value": {"stringValue": "Invoiced"}},
         {"key": "openCaseCount", "value": {"stringValue": "1"}},
         # Richer order detail so the agent can give a full, demo-worthy answer
-        # ("shipped, arriving 2026-06-28, Widget Pro + Cable Kit") from injected
-        # context alone — mirrors the get_order_status tool's response shape so
-        # the caller experience is identical whether the answer comes from the
-        # MCP tool call or this deterministic fallback.
-        {"key": "orderItems", "value": {"stringValue": "Widget Pro, Cable Kit"}},
-        {"key": "orderEta", "value": {"stringValue": "2026-06-28"}},
-        {"key": "orderTotal", "value": {"stringValue": "$149.99"}},
+        # ("delivered March 22nd, Premium Widget Assembly + Standard Connector
+        # Kit, invoiced") from injected context alone — mirrors the SAP order
+        # tools' response shape so the caller experience is identical whether
+        # the answer comes from an MCP tool call or this deterministic fallback.
+        {"key": "orderItems", "value": {"stringValue": "Premium Widget Assembly, Standard Connector Kit"}},
+        {"key": "orderEta", "value": {"stringValue": "2025-03-22"}},
+        {"key": "orderTotal", "value": {"stringValue": "€15,250.00"}},
     ]
 
     logger.info("Updating session with %d keys: %s", len(session_data), [d["key"] for d in session_data])

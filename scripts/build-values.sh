@@ -140,6 +140,10 @@ for pair in "companyName:$companyName" "greeting:$greeting"; do
 done
 
 # --- emit (jq builds valid JSON; free text escaped automatically) ----------
+# The values file may be project-scoped (<projectName>/.connect-skill-values.json)
+# before the project dir exists — create the parent dir.
+mkdir -p "$(dirname "$OUT")"
+
 jq -n \
   --arg projectName "$projectName" \
   --arg companyName "$companyName" \

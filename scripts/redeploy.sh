@@ -2,30 +2,42 @@
 set -euo pipefail
 
 # Redeploy script: re-renders from template, type-checks, and deploys via CDK.
-# Usage: ./scripts/redeploy.sh [stack-name-or-pattern]
-#   If no argument given, deploys all stacks (--all).
-#   Reads account/region from .connect-skill-values.json.
+# Usage: ./scripts/redeploy.sh [stack-name-or-pattern] [project-dir]
+#   stack-name-or-pattern  stacks to deploy (default: --all)
+#   project-dir            rendered project directory (default: cnsb-dev at the
+#                          repo root, the historical dev default)
+#
+# Reads region (and optionally accountId) from the project's values file:
+#   <project-dir>/.connect-skill-values.json   (project-scoped, preferred)
+#   <repo-root>/.connect-skill-values.json     (legacy fallback)
+# If the values file has no accountId, the account is resolved live from STS.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-VALUES_FILE="$PROJECT_ROOT/.connect-skill-values.json"
+CDK_TARGET="${1:---all}"
+DEST_DIR="${2:-$PROJECT_ROOT/cnsb-dev}"
 SRC_DIR="$PROJECT_ROOT/templates/cdk-app"
-DEST_DIR="$PROJECT_ROOT/cnsb-dev"
 
+VALUES_FILE="$DEST_DIR/.connect-skill-values.json"
+[[ -f "$VALUES_FILE" ]] || VALUES_FILE="$PROJECT_ROOT/.connect-skill-values.json"
 if [[ ! -f "$VALUES_FILE" ]]; then
-  echo "ERROR: values file not found: $VALUES_FILE" >&2
+  echo "ERROR: values file not found at $DEST_DIR/.connect-skill-values.json or $PROJECT_ROOT/.connect-skill-values.json" >&2
   exit 1
 fi
 
-# Read account and region from the values file
-CDK_DEFAULT_ACCOUNT="$(jq -r '.accountId' "$VALUES_FILE")"
-CDK_DEFAULT_REGION="$(jq -r '.region' "$VALUES_FILE")"
+# Region comes from the values file (emitted by build-values.sh). accountId is
+# not a build-values output — fall back to the caller's STS identity.
+CDK_DEFAULT_REGION="$(jq -r '.region // empty' "$VALUES_FILE")"
+[[ -n "$CDK_DEFAULT_REGION" ]] || { echo "ERROR: no region in $VALUES_FILE" >&2; exit 1; }
+CDK_DEFAULT_ACCOUNT="$(jq -r '.accountId // empty' "$VALUES_FILE")"
+if [[ -z "$CDK_DEFAULT_ACCOUNT" ]]; then
+  CDK_DEFAULT_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+fi
 export CDK_DEFAULT_ACCOUNT CDK_DEFAULT_REGION
+export AWS_REGION="$CDK_DEFAULT_REGION" AWS_DEFAULT_REGION="$CDK_DEFAULT_REGION"
 
-CDK_TARGET="${1:---all}"
-
-echo "==> Account: $CDK_DEFAULT_ACCOUNT | Region: $CDK_DEFAULT_REGION"
+echo "==> Account: $CDK_DEFAULT_ACCOUNT | Region: $CDK_DEFAULT_REGION | Project: $DEST_DIR"
 echo "==> Removing old rendered app..."
 rm -rf "$DEST_DIR/lib" "$DEST_DIR/bin" "$DEST_DIR/lambda" "$DEST_DIR/flows" \
        "$DEST_DIR/prompts" "$DEST_DIR/package.json" "$DEST_DIR/tsconfig.json" \

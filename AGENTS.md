@@ -113,7 +113,7 @@ names; keep construct IDs prefix-free so logical IDs don't churn on rename.
 - `references/` — architecture deep-dives (`connect-ai-agent-block.md`) and
   `troubleshooting.md`. Captured-from-console knowledge lives here and in `SKILL.md`.
 - `scripts/` — `build-values.sh`, `render-templates.sh`, `preflight.sh`, `smoke-test.sh`,
-  `claim-uk-did.sh`, `setup-widget.sh`, `create-webcall-user.sh`, `redeploy.sh`.
+  `claim-uk-did.sh`, `setup-widget.sh`, `setup-test-users.sh`, `redeploy.sh`.
 - `tests/` — `test-all-capabilities.sh`, `test-render-and-synth.sh`, `test-build-values.sh`.
 
 ## Conventions
@@ -129,7 +129,7 @@ names; keep construct IDs prefix-free so logical IDs don't churn on rename.
   everything to the wrong place (e.g. us-east-1 with `eu.*` model IDs, which then fail QConnect
   validation as "not available in this region"). The same `region` value still drives
   `CDK_DEFAULT_REGION`/`AWS_REGION` and the `[region]` argument of the helper scripts
-  (`preflight`, `claim-uk-did`, `smoke-test`, `setup-widget`, `create-webcall-user`).
+  (`preflight`, `claim-uk-did`, `smoke-test`, `setup-widget`, `setup-test-users`).
 - Match surrounding code style; the inline Lambda handlers live as template strings inside the
   stack `.ts` files — edit them there, not in any rendered copy.
 - Never echo or commit secrets (widget signing keys, generated user passwords).

@@ -47,8 +47,8 @@ Missing values interpolate to an empty string in the prompt (the agent simply pr
 At deploy time (when the flag is on), `connect-instance-stack.ts` creates **one** demo profile via
 the `CreateProfile` API:
 
-- Name **Alice Johnson**, `AccountNumber` **CUST001**, `PhoneNumber` **+15550100123**
-- Custom attributes `accountTier=Premium`, `recentOrderId=ORD-12345`
+- Name **Alice Johnson**, `AccountNumber` **0000100042**, `PhoneNumber` **+15550100123**
+- Custom attributes `accountTier=Premium`, `recentOrderId=0000012345`
 
 This is the **only** profile that exists out of the box. **Nothing creates profiles on the fly** —
 not Cognito sign-ins, and not contact records (the CTR integration is associated but no profile
@@ -61,7 +61,7 @@ The web token Lambda (`lambda/widget/connect-token/index.ts`) passes a `customer
 widget JWT, set to the signed-in user's **Cognito `sub`** (a random UUID), which surfaces in the
 flow as `$.Attributes.customerId` and is searched as the `_account` key (step 2 above).
 
-But the seeded profile's `AccountNumber` is `CUST001`, **not** a Cognito UUID — so on a web call
+But the seeded profile's `AccountNumber` is `0000100042`, **not** a Cognito UUID — so on a web call
 that lookup misses and you fall through to the Alice fallback. To make the widget's `customerId`
 resolve to a real, per-user profile, create a profile whose `AccountNumber` equals that Cognito
 `sub` — exactly what the helper script does for you when you pass `--cognito-username` (next section).
@@ -72,30 +72,27 @@ Use the helper script — it reads the domain and user pool from `cdk-outputs.js
 ties to a Cognito user automatically, and never needs the AWS console. (The skill offers to run this
 for you post-deploy when `customerProfilesEnabled`; you can also run it directly.)
 
-**Web-call user (recommended)** — tie the profile to a signed-in user. The widget sends that user's
-Cognito `sub` as the `customerId`, which the flow searches as the `_account` key; the script
-resolves the `sub` and sets it as the profile `AccountNumber` so they match:
+The script creates the Cognito login (temporary password by email) **and** the matching profile in
+one step. The widget sends the signed-in user's Cognito `sub` as the `customerId`, which the flow
+searches as the `_account` key; the script sets that `sub` as the profile `AccountNumber` so they
+match. Use customer number `0000100042` to tie the user to the seeded sample orders in the SAP mock
+API (any other value means the order tools find nothing for them):
 
 ```bash
-scripts/create-customer-profile.sh <projectDir> \
-  --first Jordan --last Lee \
-  --cognito-username jordan \
-  --tier Gold --order-id ORD-98765 --order-status Delivered --open-cases 0
+scripts/setup-test-users.sh <projectDir> jordan Jordan Lee jordan@example.com \
+  +15557770000 0000100042 <region>
 ```
 
-**Voice caller** — match by phone number instead:
+If the WebcallWidget stack is not deployed (phone-only), the Cognito step is skipped and the
+profile alone is created — the caller is then resolved by phone number.
 
-```bash
-scripts/create-customer-profile.sh <projectDir> \
-  --first Sam --last Rivera \
-  --account CUST777 --phone +15557770000 \
-  --tier Standard --order-id ORD-55500 --order-status Processing --open-cases 2
-```
-
-The script stores identity (name, account) plus the activity attributes (`recentOrderId`,
-`orderStatus`, `openCaseCount`) and prints the exact `{{$.Custom.*}}` the agent will receive. Then
-**call** — voice from the given number, or the web-call app signed in as that user — and the agent
-greets them with their real context. No redeploy; profiles are data.
+The profile stores **identity** (name, email, phone, customer number). Recent activity (orders,
+deliveries, invoices) is no longer stored on the profile — the agent fetches it live from the SAP
+mock API using the profile's customer number. (Legacy activity attributes like `recentOrderId` are
+still bridged into the session when present on a profile — the seeded demo profile has them — but
+the script no longer sets them.) Then **call** — voice from the given number, or the web-call app
+signed in as that user — and the agent greets them with their real context. No redeploy; profiles
+are data.
 
 > Verify it resolved: `aws customer-profiles search-profiles --domain-name <projectName>-profiles
 > --key-name _account --values "<account-or-sub>"`, and check the `profile-lookup` Lambda's
@@ -138,10 +135,10 @@ it** with that caller's real data. With **no** profile match, profile-lookup wri
 demo baseline stands — so the agent always has *something*. The shared `{{$.Custom.*}}` prompt
 snippet (identity + recent-activity sections) is appended once when **either** flag is on.
 
-**Demo coherence:** the seeded profile and the baseline line up — Alice Johnson / `CUST001` /
-Premium, `recentOrderId=ORD-12345` / `orderStatus=Shipped` — and the gateway's
-`get_order_status(ORD-12345)` tool also returns `Shipped`. One consistent customer across all three
-features.
+**Demo coherence:** the seeded profile and the baseline line up — Alice Johnson / `0000100042` /
+Premium, `recentOrderId=0000012345` / `orderStatus=Invoiced` — and the gateway's
+`get_order_status(0000012345)` tool also returns `Invoiced`. One consistent customer across all
+three features.
 
 **Why this design (vs. keying context off the resolved customer):** the Q Connect session is
 write-only from a Lambda (`GetSession` returns no `data`), so context injection genuinely can't read

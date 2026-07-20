@@ -91,6 +91,7 @@ const flowLambdas = new ConnectFlowLambdasStack(app, `${stackPrefix}-FlowLambdas
   contextInjectionEnabled: config.contextInjectionEnabled,
   customerProfilesEnabled: config.customerProfilesEnabled,
   profilesDomainName: instance.customerProfilesDomainName,
+  storageKeyArn: instance.storageKeyArn,
   demoProfilePhone: DEMO_PROFILE_PHONE,
 });
 flowLambdas.addDependency(instance);

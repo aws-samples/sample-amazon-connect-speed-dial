@@ -34,8 +34,10 @@ CONTENT_PATH="${2:-$REPO_ROOT/sample-data}"
 REGION_ARG="${3:-}"
 
 # Resolve region: explicit arg wins, else the values file, else us-east-1
-# (same precedence as setup-widget.sh).
-VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
+# (same precedence as setup-widget.sh). Project-scoped values first, repo-root
+# legacy location as fallback.
+VALUES_FILE="$PROJECT_DIR/.connect-skill-values.json"
+[[ -f "$VALUES_FILE" ]] || VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
 if [[ -n "$REGION_ARG" ]]; then
   REGION="$REGION_ARG"
 elif [[ -f "$VALUES_FILE" ]]; then

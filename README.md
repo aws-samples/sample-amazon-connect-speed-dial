@@ -1,10 +1,12 @@
-# Amazon Connect Deployment Skill
+# Deployment Speed Dial for Amazon Connect
 
-A coding assistant skill that scaffolds and deploys a working Amazon Connect Customer Contact Center.
-This skill was developed to accelerate Connect deployments and ships with helpful blueprints.
+A deployment accelerator that scaffolds and deploys a working Amazon Connect Customer Contact Center.
+This skill was developed to accelerate Amazon Connect deployments and ships with helpful blueprints.
 
 > [!NOTE]  
 > This project is a reference implementation intended as a starting point. Although it is built to AWS best practices, you should perform your own security review and hardening before any production deployment.
+
+![Overview of the available blueprint capabilities](images/csp-architecture.png "Blueprint Capabilities")
 
 ## Features
 
@@ -29,8 +31,6 @@ Planned / not yet available:
 
 | Feature | Status | Notes |
 |---------|:------:|-------|
-| Model tier / persona choice | 🚧 | Model tier is fixed (Haiku + Nova Pro); voice and language are selectable (see above). |
-| Guardrails | 🚧 | Content-safety filters. |
 | Connect Agent Panel | 🚧 | Agent workspace UI for live agents. |
 | Observability dashboard | 🚧 | Beyond the basic contact-events logging that ships today. |
 
@@ -38,6 +38,11 @@ Planned / not yet available:
 > chosen at setup. Both support the full Nova Sonic voice stack.
 
 ## Usage
+
+The blueprints in this repository can be deployed either by a simple Python script or through the help of an agentic coding assistant.
+The second option is easier for beginners because it gives you more direction through a conversational interface.
+
+### Coding assistant supported deployment
 
 Trigger the skill in Claude Code or Kiro by saying:
 
@@ -51,17 +56,55 @@ The skill walks you through six phases interactively:
 1. **Gather inputs** — project name, company name, greeting, region (US / Frankfurt), language & voice (English/German, feminine/masculine), add-on capabilities (transfer / tool calling / context injection / recording), and how you'll reach it (UK DID / web-call / manual)
 2. **Preflight** — validates AWS credentials, CDK bootstrap, Bedrock model access
 3. **Render templates** — generates a CDK project from templates with your config
-4. **Deploy** — runs `cdk deploy --all` to create AWS resources (~3-5 minutes)
+4. **Deploy** — runs `cdk deploy --all` to create AWS resources (~20 minutes)
 5. **Claim UK DID** _(optional)_ — searches and associates a UK phone number; skip this if you want to claim a different country or pick a specific number yourself in the console
 6. **Smoke test** — verifies all resources are healthy
 
-### Why UK by default?
+### Deterministic deployment (no coding assistant)
 
-UK DIDs are the only number type the skill claims automatically because they have the lightest regulatory footprint of the supported regions — Connect's `ClaimPhoneNumber` API accepts them with no address bundle, so the flow can complete unattended. Numbers in most other countries (and UK toll-free / mobile) require a regulatory address attached at claim time, which is much easier to handle in the Connect admin console. If you want one of those, skip Phase 5 and claim manually:
+Prefer a plain script over an AI assistant? `scripts/deploy.py` (Python 3, stdlib-only) runs
+the identical flow deterministically: it interviews you (same questions, same defaults as the
+skill), writes the same order file, and drives the same scripts — so deployments are
+reproducible from either front door, and you can switch between them freely.
 
-1. Open the **Phone numbers** page for your instance
-2. Click **Claim a number**, pick country/type, and complete any regulatory address the console requests
-3. Set the **contact flow** on the claimed number to `<projectName>-nova-sonic`
+**Quickstart — deploy an AI contact center (copy-paste):**
+
+Prerequisites (one-time): AWS credentials with admin access configured in your shell,
+Node.js 18+, Python 3.9+, and [Bedrock model access](#prerequisites) enabled in the target
+region. The script handles CDK bootstrap itself.
+
+```bash
+git clone https://github.com/aws-samples/sample-amazon-connect-speed-dial.git
+cd sample-amazon-connect-speed-dial
+scripts/deploy.py
+```
+
+Answer the interview questions (or press Enter to accept the defaults) — about 20 minutes
+later you have a working AI contact center, verified by an automatic smoke test, plus a
+personalized checklist for anything that needs the console. For a zero-question deployment
+with all defaults (us-east-1, English, feminine voice, no add-ons):
+
+```bash
+scripts/deploy.py --express -p my-contact-center
+```
+
+Tip: answer the "How will you reach the agent?" question with **(a) UK phone number** for a
+dialable number claimed automatically, or **(b) web-call frontend** for browser-based calling
+(finished with one console step from the printed checklist). Express mode claims a UK
+number automatically — the same default the skill's express path uses.
+
+All modes:
+
+```bash
+scripts/deploy.py                                  # interactive interview
+scripts/deploy.py --express -p myproject           # all defaults
+scripts/deploy.py --order-file .connect-skill-order.myproject.json   # non-interactive / CI
+scripts/deploy.py --order-file ... --synth-only    # render + synth only, no AWS resources
+```
+
+Console-dependent steps (web-call widget, Identity Center app config) can't be scripted; the
+CLI finishes with a personalized checklist telling you exactly which file to create and which
+helper script to run for each.
 
 ## What it deploys
 
@@ -83,8 +126,7 @@ contact-events logging is enabled:
 
 ## Capabilities
 
-The contact center is composed from independent capability flags (set from your order), not
-fixed flavors:
+The contact center is composed from independent capability flags (set from your order):
 
 - **Human transfer** (`transferEnabled`) — routes the agent's Escalate outcome to a live-agent queue.
 - **Tool calling** (`toolEnabled`) — ships a sample Lambda tool and wires the AgentCore gateway's MCP tools into the AI agent.
@@ -132,16 +174,16 @@ The skill produces these files in your working directory:
 
 | File | Purpose |
 |------|---------|
-| `.connect-skill-values.json` | Your deployment configuration (account-specific, gitignored) |
-| `<projectName>/` | The rendered CDK project (generated output, gitignored) |
-| `<projectName>/cdk-outputs.json` | Stack outputs with resource IDs after deployment |
+| `csp-<projectName>/.connect-skill-values.json` | Your deployment configuration (generated, lives in the project dir) |
+| `csp-<projectName>/` | The rendered CDK project (generated output; the `csp-` prefix makes it gitignorable as `csp-*/`) |
+| `csp-<projectName>/cdk-outputs.json` | Stack outputs with resource IDs after deployment |
 
 These are gitignored by default. The rendered CDK project is self-contained — you can `cd` into it and run `cdk deploy`, `cdk diff`, or `cdk destroy` independently.
 
 ## Tear down
 
 ```bash
-cd <projectName>
+cd csp-<projectName>
 npx cdk destroy --all
 ```
 
@@ -169,8 +211,7 @@ tests/test-all-capabilities.sh  # render + cdk synth for every transfer × tool 
 │   ├── validate-prompts.sh     # Check prompts keep required scaffolding
 │   ├── claim-uk-did.sh         # UK DID search/claim/associate
 │   ├── setup-widget.sh         # Wire up the web-call widget
-│   ├── create-webcall-user.sh  # Create the Cognito sign-in user
-│   ├── create-customer-profile.sh # Create a Customer Profile (+ injected context) for a user
+│   ├── setup-test-users.sh    # Create Cognito user + Customer Profile (or profile-only if no frontend)
 │   └── smoke-test.sh           # Post-deploy health checks
 ├── templates/cdk-app/          # CDK project template (source of truth)
 │   ├── bin/connect-blueprint.ts

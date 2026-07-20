@@ -154,7 +154,7 @@ Users sign in at the **IAM Identity Center access portal**, **not** the Connect 
 > These SSO logins are **staff** logins (agents/admins handling the Connect workspace and human
 > transfers). They are **entirely separate** from the **web-call frontend** login
 > (`frontendEnabled`), which is a **Cognito** user for the browser calling site — different
-> system, different credentials, created via `scripts/create-webcall-user.sh`.
+> system, different credentials, created via `scripts/setup-test-users.sh`.
 
 ## Troubleshooting
 

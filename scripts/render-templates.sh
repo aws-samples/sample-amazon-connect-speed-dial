@@ -17,7 +17,12 @@ cp -R "$SRC_DIR/." "$DEST_DIR/"
 # the template's seed prompts are only the fallback. Then validate the prompts
 # that will actually be deployed, so missing scaffolding fails before substitution.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(cd "$(dirname "$VALUES_FILE")" && pwd)"
+# User-asset dir (custom prompts, saml-metadata.xml): the PARENT of the
+# rendered project dir. With project-scoped values (<project>/.connect-skill-
+# values.json) dirname(VALUES_FILE) would wrongly point INSIDE the generated
+# project; the parent of DEST is the working dir in both the legacy layout
+# (values at repo root) and the project-scoped layout.
+WORK_DIR="$(cd "$(dirname "$DEST_DIR")" && pwd)"
 if [[ -d "$WORK_DIR/prompts" ]]; then
   for name in orchestration self-service; do
     if [[ -f "$WORK_DIR/prompts/$name.md" ]]; then

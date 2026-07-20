@@ -38,6 +38,8 @@ export class ConnectInstanceStack extends BlueprintStack {
   public readonly customerProfilesDomainName: string;
   public readonly storageBucketName: string;
   public readonly storageBucketArn: string;
+  /** ARN of the customer-managed storage key when encryptionEnabled; undefined otherwise. */
+  public readonly storageKeyArn?: string;
 
   constructor(scope: Construct, id: string, props: ConnectInstanceStackProps) {
     super(scope, id, props);
@@ -109,6 +111,48 @@ export class ConnectInstanceStack extends BlueprintStack {
       attr.node.addDependency(instance);
     }
 
+    // --- Storage encryption key (customer-managed KMS) ---
+    // When encryption is enabled, a CMK encrypts both the storage bucket, the
+    // Connect storage configs, AND the Customer Profiles domain. The Connect
+    // "Data storage" setting only supports SSE_KMS (no AES256 option), so
+    // enabling it requires a key.
+    //
+    // The key policy MUST allow the Amazon Connect service AND the Customer
+    // Profiles service to use the key, or recordings/transcripts/reports/profile
+    // data fail at runtime even though the deploy succeeds.
+    let storageKey: kms.Key | undefined;
+    // (exposed as storageKeyArn below once created — flow Lambdas that read
+    // CMK-encrypted Customer Profiles data need kms:Decrypt on this key)
+    if (config.encryptionEnabled) {
+      storageKey = new kms.Key(this, 'StorageKey', {
+        alias: this.namer.connect('storage'),
+        description: 'Customer-managed key for Connect storage (recordings, transcripts, reports), S3 bucket, and Customer Profiles domain',
+        enableKeyRotation: true,
+        removalPolicy: config.retainConnectInstance ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      });
+      storageKey.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: 'AllowAmazonConnectUseOfTheKey',
+          principals: [new iam.ServicePrincipal('connect.amazonaws.com')],
+          actions: ['kms:GenerateDataKey*', 'kms:Decrypt', 'kms:DescribeKey'],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+        }),
+      );
+      // Customer Profiles needs kms:CreateGrant, kms:Decrypt, and
+      // kms:GenerateDataKey to encrypt/decrypt profile data at rest when the
+      // domain is created with a DefaultEncryptionKey.
+      storageKey.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: 'AllowCustomerProfilesUseOfTheKey',
+          principals: [new iam.ServicePrincipal('profile.amazonaws.com')],
+          actions: ['kms:CreateGrant', 'kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+          resources: ['*'],
+          conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+        }),
+      );
+    }
+
     // --- Customer Profiles ---
     // Compliance note: this domain and the seeded demo profile store personal
     // data (name, email, phone, account/order details). When Customer Profiles
@@ -117,9 +161,12 @@ export class ConnectInstanceStack extends BlueprintStack {
     // under the AWS shared responsibility model — e.g. a customer-managed KMS key
     // on the domain, data-retention/expiry tuning, access logging, and least-
     // privilege access. See https://aws.amazon.com/compliance/shared-responsibility-model/
-    const profilesDomainName = this.namer.connect('profiles');
+    const profilesDomainName = `amazon-connect-${this.prefix}-profiles`;
 
     // Create a Customer Profiles domain
+    // When encryption is enabled, the storage CMK is reused as the domain's
+    // DefaultEncryptionKey so all profile data at rest is encrypted with the
+    // same customer-managed key used for recordings/transcripts/reports.
     const createDomain = new cr.AwsCustomResource(this, 'CustomerProfilesDomain', {
       onCreate: {
         service: 'CustomerProfiles',
@@ -127,6 +174,7 @@ export class ConnectInstanceStack extends BlueprintStack {
         parameters: {
           DomainName: profilesDomainName,
           DefaultExpirationDays: 366,
+          ...(storageKey ? { DefaultEncryptionKey: storageKey.keyArn } : {}),
         },
         physicalResourceId: cr.PhysicalResourceId.fromResponse('DomainName'),
       },
@@ -168,6 +216,12 @@ export class ConnectInstanceStack extends BlueprintStack {
             `arn:aws:profile:${this.region}:${this.account}:domains/${profilesDomainName}/*`,
           ],
         }),
+        // The custom resource Lambda needs KMS permissions to pass the key as
+        // DefaultEncryptionKey when calling createDomain/createProfile.
+        ...(storageKey ? [new iam.PolicyStatement({
+          actions: ['kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey', 'kms:CreateGrant'],
+          resources: [storageKey.keyArn],
+        })] : []),
       ]),
     });
     createDomain.node.addDependency(instance);
@@ -191,6 +245,9 @@ export class ConnectInstanceStack extends BlueprintStack {
           DomainName: profilesDomainName,
           Uri: instance.attrArn,
         },
+        // The domain may already be deleted (by CustomerProfilesDomain's onDelete
+        // or the instance teardown), so tolerate "not found" errors gracefully.
+        ignoreErrorCodesMatching: 'NotFoundException|ResourceNotFoundException|BadRequestException',
       },
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
@@ -226,11 +283,12 @@ export class ConnectInstanceStack extends BlueprintStack {
 
     // --- Seed a demo Customer Profile ---
     // When customer profiles are enabled, seed one demo customer so the flow's
-    // lookup has something to find. The persona matches the gateway sample tools
-    // and the context-injection demo data (Alice Johnson / CUST001 / ORD-12345),
-    // so the whole blueprint tells one coherent customer story. The demo phone
-    // (a clearly-fake fixed E.164) is also the static fallback lookup key the
-    // flow uses on web-call / fresh-DID contacts that have no matching ANI.
+    // lookup has something to find. The persona matches the AgentCore gateway's
+    // SAP order lookup tools and the context-injection demo data (Alice Johnson
+    // / order 0000012345, seeded in the SAP orders DynamoDB table), so the whole
+    // blueprint tells one coherent customer story. The demo phone (a clearly-fake
+    // fixed E.164) is also the static fallback lookup key the flow uses on
+    // web-call / fresh-DID contacts that have no matching ANI.
     // Idempotent: search first, only create if absent.
     if (config.customerProfilesEnabled) {
       const seedProfile = new cr.AwsCustomResource(this, 'SeedDemoProfile', {
@@ -241,14 +299,14 @@ export class ConnectInstanceStack extends BlueprintStack {
             DomainName: profilesDomainName,
             FirstName: 'Alice',
             LastName: 'Johnson',
-            AccountNumber: 'CUST001',
+            AccountNumber: '0000100042',
             PhoneNumber: DEMO_PROFILE_PHONE,
             EmailAddress: 'alice@example.com',
             PartyType: 'INDIVIDUAL',
             Attributes: {
               accountTier: 'Premium',
-              recentOrderId: 'ORD-12345',
-              orderStatus: 'Shipped',
+              recentOrderId: '0000012345',
+              orderStatus: 'Invoiced',
               openCaseCount: '1',
             },
           },
@@ -270,34 +328,9 @@ export class ConnectInstanceStack extends BlueprintStack {
       seedProfile.node.addDependency(putIntegration);
     }
 
-    this.customerProfilesDomainName = profilesDomainName;
+    this.storageKeyArn = storageKey?.keyArn;
 
-    // --- Storage encryption key (customer-managed KMS) ---
-    // When encryption is enabled, a CMK encrypts both the storage bucket and the
-    // Connect storage configs below. The Connect "Data storage" setting only
-    // supports SSE_KMS (no AES256 option), so enabling it requires a key.
-    //
-    // The key policy MUST allow the Amazon Connect service to use the key, or
-    // recordings/transcripts/reports fail to write at runtime even though the
-    // deploy succeeds. The grant is scoped to this account via SourceAccount.
-    let storageKey: kms.Key | undefined;
-    if (config.encryptionEnabled) {
-      storageKey = new kms.Key(this, 'StorageKey', {
-        alias: this.namer.connect('storage'),
-        description: 'Customer-managed key for Connect storage (recordings, transcripts, reports) and the storage bucket',
-        enableKeyRotation: true,
-        removalPolicy: config.retainConnectInstance ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      });
-      storageKey.addToResourcePolicy(
-        new iam.PolicyStatement({
-          sid: 'AllowAmazonConnectUseOfTheKey',
-          principals: [new iam.ServicePrincipal('connect.amazonaws.com')],
-          actions: ['kms:GenerateDataKey*', 'kms:Decrypt', 'kms:DescribeKey'],
-          resources: ['*'],
-          conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
-        }),
-      );
-    }
+    this.customerProfilesDomainName = profilesDomainName;
 
     // --- S3 Storage Bucket ---
     const storageBucket = new s3.Bucket(this, 'StorageBucket', {
