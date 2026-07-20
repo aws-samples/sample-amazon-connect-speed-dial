@@ -301,15 +301,19 @@ def main():
     # --- 10. Next steps (manual/console-dependent) ---------------------------------
     print(f"\n{BOLD}=== Deployment complete — next steps ==={NC}")
     if order.get("frontendEnabled"):
+        cloudfront_url = stack_output(outputs, "-WebcallWidget", "CloudFrontUrl") or "<see WebcallWidget stack outputs>"
         print(f"""
 Web-call frontend (console steps required):
+  Web-call site URL:  {cloudfront_url}
   1. Connect admin console → Communication widgets → create a widget for flow '{project}-nova-sonic'
+     — under allowed domains, add the site URL above ({cloudfront_url})
   2. Copy the FULL <script> embed snippet into a file: {cwd}/widget-embed.txt
   3. Copy the widget's security key, then run:
        {SCRIPTS}/setup-widget.sh {project_dir} {cwd}/widget-embed.txt '<SECURITY_KEY>' {region}
   4. Create a sign-in + matching Customer Profile for a test user:
        {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {region}
-     (customer number 0000100042 ties the user to the seeded sample orders)""")
+     (customer number 0000100042 ties the user to the seeded sample orders)
+  5. Open {cloudfront_url} and sign in to place a call.""")
     if order.get("identityCenterEnabled"):
         print(f"""
 Identity Center SSO (finish in the console — values from the stack outputs):
@@ -326,7 +330,10 @@ Phone number (manual): Connect console → Phone numbers → Claim a number,
 Knowledge base is EMPTY. Populate anytime:
        {SCRIPTS}/sync-kb.sh {project_dir} <content-path> {region}""")
     print(f"""
-Re-deploy after template changes:
+Update the deployed stacks (after editing files in {project_dir.name}/):
+       cd {project_dir} && npx cdk deploy --all
+Re-render from the skill templates (only after changes under templates/cdk-app/;
+wipes and regenerates the project dir — your order/values files are preserved):
        {SCRIPTS}/redeploy.sh --all {project_dir}
 Tear down:
        cd {project_dir} && npx cdk destroy --all
