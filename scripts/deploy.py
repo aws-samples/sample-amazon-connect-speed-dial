@@ -117,9 +117,11 @@ def interview(express=False, project_name=None):
 
     if express:
         # Express: en/us-east-1/feminine, defaults everywhere, no add-ons,
-        # manual reach — mirrors the skill's express pace.
+        # UK DID claimed — mirrors the skill's express pace (every question's
+        # default, and the reach default is "claim a UK number").
+        prefs["claimUkDid"] = True
         info("Express mode: defaults for everything else "
-             "(us-east-1, English, feminine voice, no add-ons, manual phone).")
+             "(us-east-1, English, feminine voice, no add-ons, UK number claimed).")
         return order, prefs
 
     company = ask("Company name", default="My Company")
@@ -138,6 +140,16 @@ def interview(express=False, project_name=None):
         else f"Hello, welcome to {company}. How can I assist you today?"
     )
     order["greeting"] = ask("Greeting the agent opens with", default=default_greeting)
+
+    # --- Aperitif side: custom prompts (deterministic variant of the skill's
+    # customize course: seed the editable files, pause for the user to edit;
+    # render picks them up from the working dir) ---
+    if ask_bool("Customize the AI agent's prompts (persona/instructions)?"):
+        run([str(SCRIPTS / "init-prompts.sh"), str(SKILL_DIR), str(Path.cwd())])
+        print(f"  Edit {Path.cwd()}/prompts/orchestration.md and/or self-service.md now.\n"
+              "  Keep the required scaffolding (system: block, {{$.conversationHistory}},\n"
+              "  <message> tag, {{$.contentExcerpt}}) — the render step validates it.")
+        input(f"{BOLD}  Press Enter when done editing (or immediately to keep defaults): {NC}")
 
     # --- Sides: add-on capabilities ---
     print(f"\n{BOLD}Add-on capabilities{NC} (any combination):")
@@ -159,11 +171,13 @@ def interview(express=False, project_name=None):
 
     # --- Drinks: reach ---
     reach = ask("How will you reach the agent? (a) UK phone number, (b) web-call frontend, (c) manual",
-                default="c", choices=["a", "b", "c"])
+                default="a", choices=["a", "b", "c"])
     prefs["claimUkDid"] = reach == "a"
     order["frontendEnabled"] = reach == "b"
 
     # --- Digestif: operational ---
+    info("The Connect instance is RETAINED on stack destroy by default "
+         "(retainConnectInstance in lib/config.ts — advanced toggle, not asked here).")
     order["encryptionEnabled"] = ask_bool(
         "Encrypt stored data with a customer-managed KMS key?", default=True)
     idc = ask_bool("Sign in via IAM Identity Center SSO instead of Connect-managed users?\n"
@@ -321,6 +335,11 @@ Identity Center SSO (finish in the console — values from the stack outputs):
   Role mapping pair:  {stack_output(outputs, '-ConnectInstance', 'SamlFederationRoleArn')},{stack_output(outputs, '-ConnectInstance', 'SamlProviderArn')}
   Then: attribute mappings, assign users, create matching Connect users.
   Full walkthrough: references/identity-center-sso.md""")
+    if order.get("customerProfilesEnabled", True) and not order.get("frontendEnabled"):
+        print(f"""
+Customer Profiles: create a profile for a real caller (profile-only, no Cognito):
+       {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {region}
+     (customer number 0000100042 ties the caller to the seeded sample orders)""")
     if not prefs["claimUkDid"] and not order.get("frontendEnabled"):
         print(f"""
 Phone number (manual): Connect console → Phone numbers → Claim a number,
@@ -330,6 +349,9 @@ Phone number (manual): Connect console → Phone numbers → Claim a number,
 Knowledge base is EMPTY. Populate anytime:
        {SCRIPTS}/sync-kb.sh {project_dir} <content-path> {region}""")
     print(f"""
+Agent prompts: edit {cwd}/prompts/*.md (seed them first with scripts/init-prompts.sh
+if missing), then re-render + deploy with redeploy.sh below — prompt files in the
+working dir survive re-renders and are the source of truth.
 Update the deployed stacks (after editing files in {project_dir.name}/):
        cd {project_dir} && npx cdk deploy --all
 Re-render from the skill templates (only after changes under templates/cdk-app/;

@@ -66,9 +66,12 @@ def _search(domain: str, key_name: str, value: str) -> dict | None:
             DomainName=domain, KeyName=key_name, Values=[value]
         )
     except Exception as e:  # noqa: BLE001 — lookups must never hard-fail the call
-        # Log only the exception type, never the exception message: it can echo
         # the search value (a phone number via _phone or account id via _account).
-        logger.warning("SearchProfiles failed (key=%s): %s", key_name, type(e).__name__)
+        # Include the AWS error code (e.g. AccessDeniedException — the KMS-CMK
+        # permission failure mode) so the failure class is self-evident in logs.
+        # Still never the exception MESSAGE: it can echo the searched value (PII).
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "") if hasattr(e, "response") else ""
+        logger.warning("SearchProfiles failed (key=%s): %s %s", key_name, type(e).__name__, code)
         return None
     items = resp.get("Items", [])
     # Log the key name and match count only — never the search value, which can

@@ -11,6 +11,15 @@ export interface ConnectFlowLambdasStackProps extends cdk.StackProps {
   connectInstanceArn: string;
   assistantId: string;
   /**
+   * ARN of the customer-managed storage key when encryptionEnabled. The
+   * Customer Profiles domain is created with this key as its
+   * DefaultEncryptionKey, and profile:SearchProfiles against a CMK-encrypted
+   * domain performs a KMS decrypt with the CALLER's credentials — without
+   * kms:Decrypt on the key every search fails with AccessDeniedException at
+   * runtime (IAM policy simulation passes; the KMS check is service-side).
+   */
+  storageKeyArn?: string;
+  /**
    * When true, deploy and associate the UpdateSessionContext Lambda used for
    * pre-call context injection. When false it is not created (the flow does not
    * invoke it), avoiding an unused function in the deployment.
@@ -226,6 +235,16 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
           ],
         }),
       );
+      // CMK-encrypted domain (encryptionEnabled): SearchProfiles requires the
+      // caller to be able to decrypt with the domain's DefaultEncryptionKey.
+      if (props.storageKeyArn) {
+        profileLookupFunction.addToRolePolicy(
+          new iam.PolicyStatement({
+            actions: ['kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+            resources: [props.storageKeyArn],
+          }),
+        );
+      }
       // Bridge into the Q Connect session (session resource, as for context injection).
       // The session-id segment is a wildcard by necessity: the session ARN is
       // resolved at runtime from contact data and is not known at synth time.

@@ -38,6 +38,8 @@ export class ConnectInstanceStack extends BlueprintStack {
   public readonly customerProfilesDomainName: string;
   public readonly storageBucketName: string;
   public readonly storageBucketArn: string;
+  /** ARN of the customer-managed storage key when encryptionEnabled; undefined otherwise. */
+  public readonly storageKeyArn?: string;
 
   constructor(scope: Construct, id: string, props: ConnectInstanceStackProps) {
     super(scope, id, props);
@@ -119,6 +121,8 @@ export class ConnectInstanceStack extends BlueprintStack {
     // Profiles service to use the key, or recordings/transcripts/reports/profile
     // data fail at runtime even though the deploy succeeds.
     let storageKey: kms.Key | undefined;
+    // (exposed as storageKeyArn below once created — flow Lambdas that read
+    // CMK-encrypted Customer Profiles data need kms:Decrypt on this key)
     if (config.encryptionEnabled) {
       storageKey = new kms.Key(this, 'StorageKey', {
         alias: this.namer.connect('storage'),
@@ -323,6 +327,8 @@ export class ConnectInstanceStack extends BlueprintStack {
       });
       seedProfile.node.addDependency(putIntegration);
     }
+
+    this.storageKeyArn = storageKey?.keyArn;
 
     this.customerProfilesDomainName = profilesDomainName;
 
