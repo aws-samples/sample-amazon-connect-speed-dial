@@ -18,5 +18,6 @@
   "promptLanguage": "English",
   "selfServiceFallback": "I don't have an answer.",
   "dataLakeEnabled": false,
-  "contactEventsEnabled": false
+  "contactEventsEnabled": false,
+  "retainData": true
 }

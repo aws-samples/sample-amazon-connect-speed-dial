@@ -66,7 +66,7 @@ export class ConnectInstanceStack extends BlueprintStack {
       },
     });
     instance.applyRemovalPolicy(
-      config.retainConnectInstance ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
     );
 
     this.instanceArn = instance.attrArn;
@@ -128,7 +128,7 @@ export class ConnectInstanceStack extends BlueprintStack {
         alias: this.namer.connect('storage'),
         description: 'Customer-managed key for Connect storage (recordings, transcripts, reports), S3 bucket, and Customer Profiles domain',
         enableKeyRotation: true,
-        removalPolicy: config.retainConnectInstance ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+        removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       });
       storageKey.addToResourcePolicy(
         new iam.PolicyStatement({

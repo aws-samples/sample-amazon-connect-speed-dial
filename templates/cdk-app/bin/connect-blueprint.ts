@@ -37,10 +37,10 @@ const env = {
 // the project is renamed.
 const stackPrefix = resolvePrefix();
 
-// Bucket cleanup: each stack controls its own S3 teardown behavior independently.
-// Default: do not auto-delete. Set to true per-stack when teardown cleanup is desired.
-const autoDeleteConnectBuckets = false;
-const autoDeleteWebcallBuckets = false;
+// Bucket cleanup follows config.retainData: when data retention is off
+// (disposable/e2e deployments), buckets are destroyed incl. contents on teardown.
+const autoDeleteConnectBuckets = !config.retainData;
+const autoDeleteWebcallBuckets = !config.retainData;
 
 const instance = new ConnectInstanceStack(app, `${stackPrefix}-ConnectInstance`, {
   env,
