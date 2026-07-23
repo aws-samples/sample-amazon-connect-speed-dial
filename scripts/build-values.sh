@@ -118,6 +118,12 @@ frontendEnabled="$(jq -r '.frontendEnabled // false | if type=="boolean" then . 
 dataLakeEnabled="$(jq -r '.dataLakeEnabled // false | if type=="boolean" then . else error("dataLakeEnabled must be boolean") end' "$ORDER")"
 contactEventsEnabled="$(jq -r '.contactEventsEnabled // false | if type=="boolean" then . else error("contactEventsEnabled must be boolean") end' "$ORDER")"
 
+# Data retention — defaults TRUE (explicit-null-check: only an explicit false
+# disables it). When false, data-bearing resources (Connect instance, buckets,
+# KMS key, sap-orders table) are destroyed by `cdk destroy` — for disposable
+# deployments such as E2E test runs.
+retainData="$(jq -r 'if .retainData == null then true else .retainData end | if type=="boolean" then . else error("retainData must be boolean") end' "$ORDER")"
+
 # Identity Center — boolean; when true the Connect instance uses SAML identity (SSO via Identity Center).
 identityCenterEnabled="$(jq -r '.identityCenterEnabled // false | if type=="boolean" then . else error("identityCenterEnabled must be boolean") end' "$ORDER")"
 
@@ -158,6 +164,7 @@ jq -n \
   --argjson frontendEnabled "$frontendEnabled" \
   --argjson dataLakeEnabled "$dataLakeEnabled" \
   --argjson contactEventsEnabled "$contactEventsEnabled" \
+  --argjson retainData "$retainData" \
   --argjson identityCenterEnabled "$identityCenterEnabled" \
   --argjson knowledgeBaseEnabled "$knowledgeBaseEnabled" \
   --arg kbParsingModelId "$kbParsingModelId" \
@@ -174,7 +181,7 @@ jq -n \
     contextInjectionEnabled:$contextInjectionEnabled, recordingEnabled:$recordingEnabled,
     encryptionEnabled:$encryptionEnabled, customerProfilesEnabled:$customerProfilesEnabled,
     frontendEnabled:$frontendEnabled, dataLakeEnabled:$dataLakeEnabled,
-    contactEventsEnabled:$contactEventsEnabled,
+    contactEventsEnabled:$contactEventsEnabled, retainData:$retainData,
     identityCenterEnabled:$identityCenterEnabled,
     knowledgeBaseEnabled:$knowledgeBaseEnabled, kbParsingModelId:$kbParsingModelId,
     lexLocaleId:$lexLocaleId, ttsLanguageCode:$ttsLanguageCode, voiceId:$voiceId,

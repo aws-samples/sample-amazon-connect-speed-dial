@@ -40,8 +40,14 @@ export interface DeploymentConfig {
   encryptionEnabled: boolean;
   /** When true, seed a demo Customer Profile and look the caller up in the flow, surfacing the profile to the AI agent via session data. Defaults to true. */
   customerProfilesEnabled: boolean;
-  /** When true, the Connect instance is retained on stack deletion; when false, it is destroyed. */
-  retainConnectInstance: boolean;
+  /**
+   * When true (default), data-bearing resources survive `cdk destroy`: the
+   * Connect instance, storage/KB/schema/SAP buckets, the storage KMS key, and
+   * the sap-orders DynamoDB table. Set false for disposable deployments
+   * (e.g. E2E test runs) so `cdk destroy --all` removes everything, including
+   * bucket contents (autoDeleteObjects).
+   */
+  retainData: boolean;
   /** Base name for the Connect data-storage S3 bucket. Combined with the project prefix and AWS account ID to form the full bucket name: `${prefix}-${storageBucketBaseName}-${accountId}` — the prefix keeps the (globally-unique) bucket name distinct across deployments in the same account. */
   storageBucketBaseName: string;
   /**
@@ -94,7 +100,7 @@ export const config: DeploymentConfig = {
   recordingEnabled: {{recordingEnabled}},
   encryptionEnabled: {{encryptionEnabled}},
   customerProfilesEnabled: {{customerProfilesEnabled}},
-  retainConnectInstance: true,
+  retainData: {{retainData}},
   storageBucketBaseName: 'connect-storage',
   frontendEnabled: {{frontendEnabled}},
   dataLakeEnabled: {{dataLakeEnabled}},

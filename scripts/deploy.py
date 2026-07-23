@@ -277,8 +277,11 @@ def main():
 
     # --- 5. Build + synth ------------------------------------------------------
     npm = shutil.which("npm") or die("npm not found on PATH")
-    env = dict(**__import__("os").environ,
-               AWS_REGION=region, AWS_DEFAULT_REGION=region, CDK_DEFAULT_REGION=region)
+    # Overwrite (not merge-conflict with) any pre-existing region env vars —
+    # dict(**os.environ, AWS_REGION=...) raises TypeError when AWS_REGION is
+    # already set (always the case in CI, e.g. CodeBuild).
+    env = {**__import__("os").environ,
+           "AWS_REGION": region, "AWS_DEFAULT_REGION": region, "CDK_DEFAULT_REGION": region}
     if subprocess.run([npm, "ci", "--silent"], cwd=project_dir, env=env).returncode != 0:
         run([npm, "install", "--silent"], cwd=project_dir, env=env)
     run(["npx", "tsc", "--noEmit", "-p", "tsconfig.json"], cwd=project_dir, env=env)

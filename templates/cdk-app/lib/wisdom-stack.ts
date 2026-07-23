@@ -108,7 +108,8 @@ export class WisdomStack extends BlueprintStack {
         encryption: s3.BucketEncryption.S3_MANAGED,
         enforceSSL: true,
         versioned: true,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: !config.retainData,
         lifecycleRules: [
           {
             id: 'RetainLast3Versions',
@@ -689,13 +690,15 @@ export class WisdomStack extends BlueprintStack {
             SecurityProfiles: [{ Id: securityProfileId }],
           },
           // Tolerate the association not existing at teardown. If the paired
-          // onCreate associate failed (e.g. a transient perms/propagation error),
-          // there is nothing to disassociate and the API returns "Can only
-          // disassociate security profile ids associated to the entity"
-          // (InvalidRequestException) — ignoring it, plus ResourceNotFound, keeps a
-          // failed CREATE from wedging the stack in ROLLBACK_FAILED on every retry.
+          // onCreate associate failed, or the association was already removed
+          // out-of-band, there is nothing to disassociate and the API returns
+          // "Can only disassociate security profile ids associated to the
+          // entity" — thrown as InvalidParameterException (verified live
+          // 2026-07-22; InvalidRequestException kept for safety). Ignoring
+          // these plus ResourceNotFound keeps a failed CREATE or an external
+          // cleanup from wedging the stack in DELETE_FAILED.
           ignoreErrorCodesMatching:
-            'ResourceNotFoundException|InvalidRequestException|AccessDeniedException',
+            'ResourceNotFoundException|InvalidRequestException|InvalidParameterException|AccessDeniedException',
         },
         policy: cr.AwsCustomResourcePolicy.fromStatements([
           // AssociateSecurityProfiles / DisassociateSecurityProfiles authorize

@@ -153,6 +153,7 @@ Store selections in order object as:
 - `dataLakeEnabled` (boolean): `true` if Analytics data lake selected, `false` otherwise
 - `contactEventsEnabled` (boolean): `true` if Contact-events logging selected, `false` otherwise
 - `knowledgeBaseEnabled` (boolean): `true` if Knowledge base selected, `false` otherwise
+- `retainData` (boolean): **Defaults to `true`** in `build-values.sh` when omitted — data-bearing resources (Connect instance, storage/KB/schema/SAP buckets, KMS key, sap-orders table) survive `cdk destroy` for data protection. Set `false` only for disposable deployments (tests/demos) so `cdk destroy --all` removes everything including bucket contents. Not an interview question — omit unless the user explicitly asks for a fully deletable deployment.
 
 ### Drinks — Reach & operate
 

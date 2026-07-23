@@ -187,6 +187,59 @@ cd csp-<projectName>
 npx cdk destroy --all
 ```
 
+> [!IMPORTANT]
+> **By default, data-bearing resources are retained** when you destroy the stacks. This is
+> deliberate: they can hold call recordings, chat transcripts, knowledge-base documents, and
+> customer data that you may be legally required to keep — and that should never disappear
+> because of an accidental `cdk destroy`. The retained resources are:
+>
+> | Resource | Contains |
+> |---|---|
+> | Amazon Connect instance | contact records, users, flows |
+> | `<project>-connect-storage-…` S3 bucket | call recordings, chat transcripts, reports |
+> | `<project>-kb-docs-…` S3 bucket | knowledge-base documents |
+> | `<project>-gateway-schemas-…` / `<project>-sap-documents-…` S3 buckets | tool schemas, sample documents |
+> | Storage KMS key (when `encryptionEnabled`) | encrypts the above |
+> | `<project>-sap-orders` DynamoDB table | sample tool data |
+
+### Full delete (nothing retained)
+
+**Option A — decide before deploying.** Set `"retainData": false` in your order JSON. The
+stacks are then synthesized without retention: `npx cdk destroy --all` removes everything,
+including bucket contents. Recommended for test/demo/ephemeral deployments only.
+
+**Option B — clean up after a default deployment.** Run `cdk destroy --all`, then delete the
+retained resources manually:
+
+```bash
+PREFIX=<projectName>; REGION=<region>; ACCOUNT=<account-id>
+
+# 1. Connect instance
+aws connect delete-instance --instance-id <instance-id> --region $REGION
+
+# 2. Buckets (must be emptied first — they are versioned; use the console
+#    "Empty" button, or delete all versions via the CLI)
+aws s3api delete-bucket --bucket $PREFIX-connect-storage-$ACCOUNT-$REGION-an --region $REGION
+# ... repeat for kb-docs / gateway-schemas / sap-documents
+
+# 3. DynamoDB table
+aws dynamodb delete-table --table-name $PREFIX-sap-orders --region $REGION
+
+# 4. KMS key (7-day minimum pending window; billing stops when deletion completes)
+aws kms schedule-key-deletion --key-id <StorageKmsKeyArn from cdk-outputs.json> --pending-window-in-days 7
+```
+
+Two teardown quirks to know about:
+
+- If the orchestration AI agent was **published** (console or automation), the publish
+  creates security-profile associations on the numbered agent versions that CloudFormation
+  doesn't manage. If the Wisdom stack goes `DELETE_FAILED` on `AgentSecurityProfile`
+  ("in use"), disassociate the listed entity ARNs with
+  `aws connect disassociate-security-profiles --entity-type AI_AGENT …` and retry the destroy.
+- Delete the stacks **before** manually deleting the instance — removing the instance first
+  strands the `<project>-mcp` App Integrations application (its association only clears after
+  instance deletion propagates; retry `aws appintegrations delete-application` later).
+
 ## Development
 
 > **Editing infra?** All CDK changes go in `templates/cdk-app/` — never in a rendered project
@@ -226,3 +279,9 @@ tests/test-all-capabilities.sh  # render + cdk synth for every transfer × tool 
 │   └── fixtures/sample-values.json
 └── references/                 # Architecture docs and troubleshooting
 ```
+
+## Contributors
+This project is being manintaind by below people. Feel free to reach out for ideas and feedback.
+
+Marco Strauss, strmarco@amazon.de
+Bent Krause, bentkr@amazon.de

@@ -12,7 +12,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # deploy region deterministically instead of relying on shell env vars.)
 "$WRITER" "$ROOT/tests/fixtures/order-express.json" "$TMP/express.json"
 keys=$(jq -r 'keys_unsorted | join(",")' "$TMP/express.json" | tr ',' '\n' | sort | paste -sd, -)
-expected="answerGenModelId,companyName,contactEventsEnabled,contextInjectionEnabled,customerProfilesEnabled,dataLakeEnabled,encryptionEnabled,frontendEnabled,greeting,identityCenterEnabled,kbParsingModelId,knowledgeBaseEnabled,lexLocaleId,orchestrationModelId,projectName,promptLanguage,recordingEnabled,region,selfServiceFallback,sonicVoiceId,toolEnabled,transferEnabled,ttsLanguageCode,voiceId"
+expected="answerGenModelId,companyName,contactEventsEnabled,contextInjectionEnabled,customerProfilesEnabled,dataLakeEnabled,encryptionEnabled,frontendEnabled,greeting,identityCenterEnabled,kbParsingModelId,knowledgeBaseEnabled,lexLocaleId,orchestrationModelId,projectName,promptLanguage,recordingEnabled,region,retainData,selfServiceFallback,sonicVoiceId,toolEnabled,transferEnabled,ttsLanguageCode,voiceId"
 [[ "$keys" == "$expected" ]] || fail "express keys: got [$keys] want [$expected]"
 [[ "$(jq -r '.projectName' "$TMP/express.json")" == "acme-support" ]] || fail "projectName"
 [[ "$(jq -r '.companyName' "$TMP/express.json")" == "My Company" ]] || fail "default companyName"

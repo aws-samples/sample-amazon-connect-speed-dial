@@ -9,6 +9,7 @@ import * as appintegrations from 'aws-cdk-lib/aws-appintegrations';
 import * as connect from 'aws-cdk-lib/aws-connect';
 import { Construct } from 'constructs';
 import { BlueprintStack } from './blueprint-stack';
+import { config } from './config';
 
 /**
  * Name of the SAP order lookup gateway target.
@@ -59,7 +60,8 @@ export class AgentCoreGatewayStack extends BlueprintStack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       versioned: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: !config.retainData,
       lifecycleRules: [
         {
           id: 'TransitionToIA',
@@ -277,7 +279,7 @@ export class AgentCoreGatewayStack extends BlueprintStack {
       // Seeded/ingested records expire 365 days after write (both SapSeedFn
       // and SapDocumentIngestFn set the `ttl` attribute on every item).
       timeToLiveAttribute: 'ttl',
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
     });
 
     ordersTable.addGlobalSecondaryIndex({
@@ -398,7 +400,8 @@ export class AgentCoreGatewayStack extends BlueprintStack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       versioned: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: !config.retainData,
       lifecycleRules: [
         {
           id: 'RetainLast3Versions',
