@@ -1,7 +1,7 @@
 /**
  * Contact-flow composition helpers.
  *
- * The base flow (`flows/nova-sonic-base.json`) is the Q&A agent. Optional
+ * The base flow (`flows/basic-agent-flow.json`) is the Q&A agent. Optional
  * capabilities are layered on by pure transforms so any combination produces a
  * valid flow. Transforms are idempotent and never mutate their input.
  */
@@ -175,10 +175,10 @@ function insertPrecallLambda(out: any, id: string, lambdaArnPlaceholder: string,
 }
 
 /**
- * Enable pre-call context injection: a Lambda pushes demo caller context into
- * the Q Connect session before the agent starts. See ensurePrecallSession /
- * insertPrecallLambda. The Lambda ARN is left as a placeholder for
- * ContactFlowStack to substitute.
+ * Enable caller context injection: a Lambda resolves the caller's Customer
+ * Profile and pushes identity data into the Q Connect session before the agent
+ * starts. See ensurePrecallSession / insertPrecallLambda. The Lambda ARN is
+ * left as a placeholder for ContactFlowStack to substitute.
  */
 export function applyContextInjection(
   flow: any,
@@ -186,21 +186,6 @@ export function applyContextInjection(
 ): any {
   const out = clone(flow);
   insertPrecallLambda(out, 'provide-agent-context', lambdaArnPlaceholder, 440);
-  return out;
-}
-
-/**
- * Enable Customer Profiles: a Lambda looks the caller up in Customer Profiles
- * and bridges the profile into the Q Connect session (so the agent reads it via
- * {{$.Custom.*}}). Uses the same precall-session scaffolding as context
- * injection, so the two compose order-independently and share one session.
- */
-export function applyCustomerProfiles(
-  flow: any,
-  lambdaArnPlaceholder = '__PROFILE_LOOKUP_LAMBDA_ARN__',
-): any {
-  const out = clone(flow);
-  insertPrecallLambda(out, 'provide-profile-context', lambdaArnPlaceholder, 560);
   return out;
 }
 

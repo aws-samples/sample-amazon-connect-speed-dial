@@ -50,10 +50,9 @@ export interface WisdomStackProps extends cdk.StackProps {
   instanceId: string;
   /**
    * Namespace of the AgentCore gateway's MCP server application (the gateway
-   * id). Required only when `config.toolEnabled` is true — used to grant the
-   * gateway's MCP tools on the AI-agent security profile. The bare gateway id
-   * is the application namespace the Connect console shows (minus its
-   * `gateway_` display prefix).
+   * id) — used to grant the gateway's MCP tools on the AI-agent security
+   * profile. The bare gateway id is the application namespace the Connect
+   * console shows (minus its `gateway_` display prefix).
    */
   gatewayNamespace?: string;
 }
@@ -516,7 +515,7 @@ export class WisdomStack extends BlueprintStack {
     // takes its description and schema from the MCP server, and QConnect rejects
     // any attempt to override the description here.
     const gatewayToolConfigs =
-      config.toolEnabled && props.gatewayNamespace
+      props.gatewayNamespace
         ? SAP_GATEWAY_TOOLS.map((tool) => {
             const mcpToolName = `${SAP_GATEWAY_TARGET}___${tool}`;
             return {
@@ -622,7 +621,7 @@ export class WisdomStack extends BlueprintStack {
     // Designer shows "Insufficient Permissions" and the tool calls are rejected,
     // even though the tool is listed on the agent.
     const gatewayApplications =
-      config.toolEnabled && props.gatewayNamespace
+      props.gatewayNamespace
         ? [
             {
               // `type: 'MCP'` is required — without it Connect defaults to a

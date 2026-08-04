@@ -9,6 +9,19 @@ if [[ ! -f "$VALUES_FILE" ]]; then echo "values file not found: $VALUES_FILE" >&
 if [[ ! -d "$SRC_DIR" ]]; then echo "source dir not found: $SRC_DIR" >&2; exit 1; fi
 
 mkdir -p "$DEST_DIR"
+
+# Clean the destination before copying so stale files from previous template
+# versions don't linger. Preserve runtime artifacts that are expensive to
+# recreate or hold deploy state.
+if [[ -d "$DEST_DIR" ]]; then
+  find "$DEST_DIR" -mindepth 1 -maxdepth 1 \
+    ! -name 'node_modules' \
+    ! -name 'cdk.out' \
+    ! -name 'cdk-outputs.json' \
+    ! -name '.*' \
+    -exec rm -rf {} +
+fi
+
 cp -R "$SRC_DIR/." "$DEST_DIR/"
 
 # Agent prompts: if the working dir (where the values file lives) has its own

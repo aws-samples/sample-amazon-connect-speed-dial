@@ -1,0 +1,604 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "enable-logs",
+  "Settings": {
+    "InputParameters": [],
+    "OutputParameters": [],
+    "Transitions": [
+      {
+        "DisplayName": "Success",
+        "ReferenceName": "Success",
+        "Description": ""
+      },
+      {
+        "DisplayName": "Error",
+        "ReferenceName": "Error",
+        "Description": ""
+      }
+    ]
+  },
+
+  "Metadata": {
+    "entryPointPosition": {
+      "x": -1248,
+      "y": 119.2
+    },
+    "ActionMetadata": {
+      "enable-logs": {
+        "position": {
+          "x": -1084,
+          "y": 118.4
+        }
+      },
+
+      "store-consent": {
+        "position": {
+          "x": 121.6,
+          "y": 365.6
+        },
+        "parameters": {
+          "Attributes": {
+            "recordingConsent": {
+              "useDynamic": true
+            }
+          }
+        },
+        "dynamicParams": [
+          "recordingConsent"
+        ]
+      },
+
+      "d8f9acba-c9e7-46fd-95b6-ca837b55f62a": {
+        "position": {
+          "x": -444.8,
+          "y": 120.8
+        },
+        "conditions": [],
+        "conditionMetadata": [
+          {
+            "id": "231b81a8-7ae7-442d-a83a-01e99dba6040",
+            "operator": {
+              "name": "Equals",
+              "value": "Equals",
+              "shortDisplay": "="
+            },
+            "value": "VOICE"
+          },
+          {
+            "id": "e7b9eeb8-1db6-4f34-bbe9-73b44eb8381b",
+            "operator": {
+              "name": "Equals",
+              "value": "Equals",
+              "shortDisplay": "="
+            },
+            "value": "CHAT"
+          }
+        ]
+      },
+      "92d40e1b-1034-4f5d-9bdf-b94fd78b926c": {
+        "position": {
+          "x": -166.4,
+          "y": 413.6
+        },
+        "parameters": {
+          "ViewResource": {
+            "Id": {
+              "displayName": "Detail"
+            }
+          },
+          "InvocationTimeLimitSeconds": {
+            "unit": 60
+          },
+          "ViewData": {
+            "Sections": {
+              "useJson": true
+            }
+          }
+        }
+      },
+      "1fcef182-ca9d-48dc-9699-b2a6929e443a": {
+        "position": {
+          "x": 560,
+          "y": 260
+        },
+        "conditions": [],
+        "conditionMetadata": [
+          {
+            "id": "ed7f8ffa-a262-4284-9b23-8c543800e934",
+            "operator": {
+              "name": "Equals",
+              "value": "Equals",
+              "shortDisplay": "="
+            },
+            "value": "I consent"
+          }
+        ]
+      },
+      "recording-consent": {
+        "position": {
+          "x": 144.8,
+          "y": -16
+        },
+        "conditionMetadata": [
+          {
+            "id": "ba1c8a08-4bb9-41a3-ba30-8288aac6bc84",
+            "value": "1"
+          },
+          {
+            "id": "c5e977e6-90b2-43d0-b9ff-93c36d12f0ea",
+            "value": "2"
+          }
+        ]
+      },
+      "error-msg": {
+        "position": {
+          "x": 1964.8,
+          "y": 915.2
+        }
+      },
+      "recording chat yes": {
+        "position": {
+          "x": 825.6,
+          "y": 357.6
+        },
+        "isFriendlyName": true
+      },
+      "recording chat no": {
+        "position": {
+          "x": 814.4,
+          "y": 871.2
+        },
+        "isFriendlyName": true
+      },
+      "recording voice no": {
+        "position": {
+          "x": 829.6,
+          "y": -8
+        },
+        "isFriendlyName": true
+      },
+      "recording voice yes": {
+        "position": {
+          "x": 717.6,
+          "y": -274.4
+        },
+        "isFriendlyName": true
+      },
+      "end-module-success": {
+        "position": {
+          "x": 1716,
+          "y": 434.4
+        }
+      },
+      "set-status-success": {
+        "position": {
+          "x": 1500,
+          "y": 434.4
+        }
+      },
+      "end-module-error": {
+        "position": {
+          "x": 2417.6,
+          "y": 760
+        }
+      },
+      "set-status-error": {
+        "position": {
+          "x": 2200,
+          "y": 760
+        }
+      }
+    },
+    "Annotations": [],
+    "name": "consent-analytics-setup",
+    "description": "Recording consent module - collects customer consent for recording via DTMF (voice) or view (chat), enables/disables recording accordingly, then returns to calling flow.",
+    "type": "contactFlowModule",
+    "status": "published",
+    "hash": {}
+  },
+  "Actions": [
+    {
+      "Parameters": {
+        "FlowLoggingBehavior": "Enabled"
+      },
+      "Identifier": "enable-logs",
+      "Type": "UpdateFlowLoggingBehavior",
+      "Transitions": {
+        "NextAction": "d8f9acba-c9e7-46fd-95b6-ca837b55f62a"
+      }
+    },
+
+    {
+      "Parameters": {
+        "Attributes": {
+          "recordingConsent": "$.Views.ViewResultData.actionName"
+        },
+        "TargetContact": "Current"
+      },
+      "Identifier": "store-consent",
+      "Type": "UpdateContactAttributes",
+      "Transitions": {
+        "NextAction": "1fcef182-ca9d-48dc-9699-b2a6929e443a",
+        "Errors": [
+          {
+            "NextAction": "1fcef182-ca9d-48dc-9699-b2a6929e443a",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+
+    {
+      "Parameters": {
+        "ComparisonValue": "$.Channel"
+      },
+      "Identifier": "d8f9acba-c9e7-46fd-95b6-ca837b55f62a",
+      "Type": "Compare",
+      "Transitions": {
+        "NextAction": "set-status-error",
+        "Conditions": [
+          {
+            "NextAction": "recording-consent",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "VOICE"
+              ]
+            }
+          },
+          {
+            "NextAction": "92d40e1b-1034-4f5d-9bdf-b94fd78b926c",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "CHAT"
+              ]
+            }
+          }
+        ],
+        "Errors": [
+          {
+            "NextAction": "set-status-error",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "ViewResource": {
+          "Id": "arn:aws:connect:eu-central-1:aws:view/detail:1",
+          "Version": "Latest"
+        },
+        "ViewData": {
+          "Heading": "Recording Consent",
+          "Sections": [
+            "If you consent, the conversation will be recorded for quality assurance. If you decline, we will continue without recording."
+          ],
+          "Actions": [
+            "I consent",
+            "I do not consent"
+          ]
+        },
+        "InvocationTimeLimitSeconds": "60"
+      },
+      "Identifier": "92d40e1b-1034-4f5d-9bdf-b94fd78b926c",
+      "Type": "ShowView",
+      "Transitions": {
+        "NextAction": "set-status-error",
+        "Conditions": [
+          {
+            "NextAction": "store-consent",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "ActionSelected"
+              ]
+            }
+          }
+        ],
+        "Errors": [
+          {
+            "NextAction": "recording chat no",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "set-status-error",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "recording chat no",
+            "ErrorType": "TimeLimitExceeded"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "ComparisonValue": "$.Attributes.recordingConsent"
+      },
+      "Identifier": "1fcef182-ca9d-48dc-9699-b2a6929e443a",
+      "Type": "Compare",
+      "Transitions": {
+        "NextAction": "recording chat no",
+        "Conditions": [
+          {
+            "NextAction": "recording chat yes",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "I consent"
+              ]
+            }
+          }
+        ],
+        "Errors": [
+          {
+            "NextAction": "recording chat no",
+            "ErrorType": "NoMatchingCondition"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "Text": "Willkommen beim Kundenservice von bla. Bevor wir Ihnen helfen können, möchten wir Sie um Ihre Einwilligung bitten, dieses Gespräch zur Verbesserung unseres Service aufzuzeichnen.\n\nBitte drücken Sie die 1, um der Aufzeichnung zuzustimmen, oder die 2, wenn Sie nicht einverstanden sind.",
+        "StoreInput": "False",
+        "InputTimeLimitSeconds": "5"
+      },
+      "Identifier": "recording-consent",
+      "Type": "GetParticipantInput",
+      "Transitions": {
+        "NextAction": "recording voice no",
+        "Conditions": [
+          {
+            "NextAction": "recording voice yes",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "1"
+              ]
+            }
+          },
+          {
+            "NextAction": "recording voice no",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": [
+                "2"
+              ]
+            }
+          }
+        ],
+        "Errors": [
+          {
+            "NextAction": "recording voice no",
+            "ErrorType": "InputTimeLimitExceeded"
+          },
+          {
+            "NextAction": "recording voice no",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "set-status-error",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "SkipWhenDTMFBufferEnabled": "false",
+        "Text": "Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut."
+      },
+      "Identifier": "error-msg",
+      "Type": "MessageParticipant",
+      "Transitions": {
+        "NextAction": "set-status-error",
+        "Errors": [
+          {
+            "NextAction": "set-status-error",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "ChatBehavior": {
+          "ChatAnalyticsBehavior": {
+            "Enabled": "True",
+            "AnalyticsLanguage": "en-US",
+            "AnalyticsModes": [
+              "ContactLens"
+            ],
+            "ConversationalAnalyticsRedactionConfiguration": {
+              "Enabled": "False"
+            },
+            "InFlightChatRedactionConfiguration": {
+              "Enabled": "False"
+            },
+            "SentimentConfiguration": {
+              "Enabled": "False"
+            }
+          }
+        }
+      },
+      "Identifier": "recording chat yes",
+      "Type": "UpdateContactRecordingAndAnalyticsBehavior",
+      "Transitions": {
+        "NextAction": "set-status-success",
+        "Errors": [
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "ChannelMismatch"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "InFlightRedactionConfigurationFailed"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "ChatBehavior": {
+          "ChatAnalyticsBehavior": {
+            "Enabled": "False"
+          }
+        }
+      },
+      "Identifier": "recording chat no",
+      "Type": "UpdateContactRecordingAndAnalyticsBehavior",
+      "Transitions": {
+        "NextAction": "set-status-success",
+        "Errors": [
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "ChannelMismatch"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "InFlightRedactionConfigurationFailed"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "VoiceBehavior": {
+          "VoiceRecordingBehavior": {
+            "RecordedParticipants": [],
+            "IVRRecordingBehavior": "Disabled"
+          },
+          "VoiceAnalyticsBehavior": {
+            "Enabled": "False"
+          }
+        }
+      },
+      "Identifier": "recording voice no",
+      "Type": "UpdateContactRecordingAndAnalyticsBehavior",
+      "Transitions": {
+        "NextAction": "set-status-success",
+        "Errors": [
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "ChannelMismatch"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "VoiceBehavior": {
+          "VoiceRecordingBehavior": {
+            "RecordedParticipants": [
+              "Agent",
+              "Customer"
+            ],
+            "IVRRecordingBehavior": "Enabled"
+          },
+          "VoiceAnalyticsBehavior": {
+            "Enabled": "True",
+            "AnalyticsLanguage": "en-US",
+            "AnalyticsModes": [
+              "RealTime",
+              "AutomatedInteraction"
+            ],
+            "ConversationalAnalyticsRedactionConfiguration": {
+              "Enabled": "True",
+              "RedactionMaskMode": "PII",
+              "RedactionResults": "RedactedOnly"
+            },
+            "SentimentConfiguration": {
+              "Enabled": "True"
+            },
+            "SummaryConfiguration": {
+              "SummaryModes": [
+                "PostContact",
+                "AutomatedInteraction"
+              ]
+            }
+          }
+        }
+      },
+      "Identifier": "recording voice yes",
+      "Type": "UpdateContactRecordingAndAnalyticsBehavior",
+      "Transitions": {
+        "NextAction": "set-status-success",
+        "Errors": [
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "set-status-success",
+            "ErrorType": "ChannelMismatch"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {
+        "Attributes": {
+          "moduleStatus": "success"
+        },
+        "TargetContact": "Current"
+      },
+      "Identifier": "set-status-success",
+      "Type": "UpdateContactAttributes",
+      "Transitions": {
+        "NextAction": "end-module-success",
+        "Errors": [
+          {
+            "NextAction": "end-module-success",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {},
+      "Identifier": "end-module-success",
+      "Type": "EndFlowModuleExecution",
+      "Transitions": {}
+    },
+    {
+      "Parameters": {
+        "Attributes": {
+          "moduleStatus": "error"
+        },
+        "TargetContact": "Current"
+      },
+      "Identifier": "set-status-error",
+      "Type": "UpdateContactAttributes",
+      "Transitions": {
+        "NextAction": "end-module-error",
+        "Errors": [
+          {
+            "NextAction": "end-module-error",
+            "ErrorType": "NoMatchingError"
+          }
+        ]
+      }
+    },
+    {
+      "Parameters": {},
+      "Identifier": "end-module-error",
+      "Type": "EndFlowModuleExecution",
+      "Transitions": {}
+    }
+  ]
+}

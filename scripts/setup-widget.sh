@@ -67,6 +67,27 @@ PREFIX="$(echo "$EXTRACT_JSON" | jq -r '.prefix')"
 [[ -n "$PREFIX" && "$PREFIX" != "null" ]]       || fail "could not read project prefix"
 ok "Widget $WIDGET_ID extracted; config.ts patched (prefix: $PREFIX)"
 
+# Persist the widget entry to .connect-skill-values.json so that future renders
+# (render-templates.sh) restore the connectWidgets array automatically — the
+# previous bug was that only config.ts was patched, and a re-render nuked it.
+SNIPPET_ID="$(echo "$EXTRACT_JSON" | jq -r '.snippetId')"
+SCRIPT_URL="$(echo "$EXTRACT_JSON" | jq -r '.scriptUrl')"
+WIDGET_ENTRY="$(jq -n --arg id "$WIDGET_ID" --arg sid "$SNIPPET_ID" --arg url "$SCRIPT_URL" \
+  '{id: $id, snippetId: $sid, scriptUrl: $url}')"
+
+# Use the project-scoped values file; fall back to repo-root (legacy layout).
+PERSIST_VALUES="$PROJECT_DIR/.connect-skill-values.json"
+[[ -f "$PERSIST_VALUES" ]] || PERSIST_VALUES="$REPO_ROOT/.connect-skill-values.json"
+if [[ -f "$PERSIST_VALUES" ]]; then
+  # Replace the entire connectWidgets array (or add it if missing) with the
+  # current widget entry. jq handles both cases cleanly.
+  jq --argjson w "[$WIDGET_ENTRY]" '.connectWidgets = $w' "$PERSIST_VALUES" > "$PERSIST_VALUES.tmp" \
+    && mv "$PERSIST_VALUES.tmp" "$PERSIST_VALUES"
+  ok "Widget persisted to $(basename "$PERSIST_VALUES") (survives re-render)"
+else
+  echo -e "${YELLOW}⚠ Could not find .connect-skill-values.json to persist widget — re-render will lose it${NC}" >&2
+fi
+
 # --- 2. Deploy the widget stack --------------------------------------------
 # This (re)creates config.js with the widget and the empty signing-key secret.
 info "Deploying ${PREFIX}-WebcallWidget stack in ${REGION} (this can take a few minutes)..."

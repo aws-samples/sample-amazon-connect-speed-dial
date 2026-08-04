@@ -11,45 +11,45 @@ export interface ConnectFlowLambdasStackProps extends cdk.StackProps {
   connectInstanceArn: string;
   assistantId: string;
   /**
-   * ARN of the customer-managed storage key when encryptionEnabled. The
-   * Customer Profiles domain is created with this key as its
-   * DefaultEncryptionKey, and profile:SearchProfiles against a CMK-encrypted
-   * domain performs a KMS decrypt with the CALLER's credentials — without
-   * kms:Decrypt on the key every search fails with AccessDeniedException at
-   * runtime (IAM policy simulation passes; the KMS check is service-side).
+   * ARN of the customer-managed storage key (always created). The Customer
+   * Profiles domain is created with this key as its DefaultEncryptionKey, and
+   * profile:SearchProfiles against a CMK-encrypted domain performs a KMS
+   * decrypt with the CALLER's credentials — without kms:Decrypt on the key
+   * every search fails with AccessDeniedException at runtime (IAM policy
+   * simulation passes; the KMS check is service-side).
    */
-  storageKeyArn?: string;
+  storageKeyArn: string;
   /**
-   * When true, deploy and associate the UpdateSessionContext Lambda used for
-   * pre-call context injection. When false it is not created (the flow does not
-   * invoke it), avoiding an unused function in the deployment.
-   */
-  contextInjectionEnabled: boolean;
-  /**
-   * When true, deploy and associate the ProfileLookup Lambda that searches
-   * Customer Profiles and bridges the result into the Q Connect session.
+   * When true, deploy and associate the UpdateSessionContext Lambda that
+   * searches Customer Profiles for the caller and pushes the resulting identity
+   * data into the Q Connect session. When false it is not created (the flow
+   * does not invoke it), avoiding an unused function in the deployment.
    */
   customerProfilesEnabled: boolean;
   /** Customer Profiles domain to search (required when customerProfilesEnabled). */
   profilesDomainName?: string;
-  /** Static demo phone used as the fallback profile lookup key. */
-  demoProfilePhone?: string;
+  /**
+   * Name of the SAP orders DynamoDB table (from the AgentCore gateway stack).
+   * When set, the UpdateSessionContext Lambda pre-populates the caller's most
+   * recent order into the Q Connect session (so the agent answers "my latest
+   * order" without a tool call). Omitted → pre-population is skipped.
+   */
+  sapOrderTableName?: string;
 }
 
 /**
  * Stack that deploys Lambda functions invoked from within Connect contact flows.
  *
- * - UpdateSessionContext: pushes contextual data into the Q Connect session
- * - DescribeContact: calls DescribeContact and logs results to CloudWatch
+ * - UpdateSessionContext: resolves the caller's Customer Profile and pushes
+ *   identity data into the Q Connect session (deployed when customerProfilesEnabled).
+ * - DescribeContact: calls DescribeContact and logs results to CloudWatch.
  *
  * Each Lambda is granted least-privilege IAM policies and associated with
  * the Connect instance so it can be referenced from flow blocks.
  */
 export class ConnectFlowLambdasStack extends BlueprintStack {
-  /** Set only when contextInjectionEnabled; undefined otherwise. */
-  public readonly updateSessionContextFunction?: lambda.Function;
   /** Set only when customerProfilesEnabled; undefined otherwise. */
-  public readonly profileLookupFunction?: lambda.Function;
+  public readonly updateSessionContextFunction?: lambda.Function;
   public readonly describeContactFunction: lambda.Function;
 
   /**
@@ -112,121 +112,47 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
       description: 'Pinned boto3 layer for consistent SDK version across flow Lambdas',
     });
 
-    // --- Update Session Context Lambda (pre-call context injection) ---
-    // Only deployed when context injection is enabled; otherwise the flow never
-    // invokes it, so leaving it out keeps the deployment free of an unused function.
-    if (props.contextInjectionEnabled) {
+    // --- Update Session Context Lambda (Customer Profiles → Q Connect session) ---
+    // Deployed only when customer profiles are enabled. Searches Customer
+    // Profiles for the caller and pushes identity fields into the Q Connect
+    // session (UpdateSessionData, namespace Custom) so the agent reads them via
+    // {{$.Custom.*}}.
+    if (props.customerProfilesEnabled) {
       const updateSessionContextFunction = new lambda.Function(this, 'UpdateSessionContextFunction', {
         runtime: lambda.Runtime.PYTHON_3_13,
+        architecture: lambda.Architecture.ARM_64,
         handler: 'index.handler',
         code: lambda.Code.fromAsset(
           path.join(__dirname, '../lambda/flow/update-session-context'),
         ),
         layers: [boto3Layer],
         timeout: cdk.Duration.seconds(15),
-        description: 'Pushes contextual data into the Q Connect session before the AI agent starts',
+        description: 'Resolves caller profile and pushes identity data into the Q Connect session',
         environment: {
           ASSISTANT_ID: props.assistantId,
-          LOG_LEVEL: 'INFO',
+          PROFILES_DOMAIN: props.profilesDomainName ?? '',
+          SAP_ORDERS_TABLE: props.sapOrderTableName ?? '',
+          LOG_LEVEL: 'ERROR',
         },
       });
       this.updateSessionContextFunction = updateSessionContextFunction;
 
-      // Allow the Lambda to update Q Connect session data.
-      // UpdateSessionData authorizes against the *session* resource
-      // (arn:...:session/<assistantId>/<sessionId>), not the assistant ARN — so
-      // the session resource must be granted explicitly or the call is denied.
-      // The session-id segment is a wildcard by necessity: the session ARN is
-      // resolved at runtime from contact data (via DescribeContact) and is not
-      // known at synth time. Scope stays bounded to this specific assistant.
-      updateSessionContextFunction.addToRolePolicy(
-        new iam.PolicyStatement({
-          actions: ['wisdom:UpdateSessionData'],
-          resources: [
-            `arn:aws:wisdom:${this.region}:${this.account}:assistant/${props.assistantId}`,
-            `arn:aws:wisdom:${this.region}:${this.account}:session/${props.assistantId}/*`,
-          ],
-        }),
-      );
-
-      // Allow the Lambda to call DescribeContact (needed to resolve the session ARN)
-      updateSessionContextFunction.addToRolePolicy(
-        new iam.PolicyStatement({
-          actions: ['connect:DescribeContact'],
-          resources: [`${props.connectInstanceArn}/contact/*`],
-        }),
-      );
-
-      // Allow Amazon Connect to invoke this Lambda
-      updateSessionContextFunction.addPermission('ConnectInvoke', {
-        principal: new iam.ServicePrincipal('connect.amazonaws.com'),
-        sourceAccount: this.account,
-        sourceArn: props.connectInstanceArn,
-      });
-
-      // Associate the Lambda with the Connect instance
-      const associateUpdateSession = new cr.AwsCustomResource(this, 'AssociateUpdateSessionLambda', {
-        onCreate: {
-          service: 'Connect',
-          action: 'associateLambdaFunction',
-          parameters: {
-            InstanceId: props.connectInstanceId,
-            FunctionArn: updateSessionContextFunction.functionArn,
-          },
-          physicalResourceId: cr.PhysicalResourceId.of(
-            `${props.connectInstanceId}-${updateSessionContextFunction.functionName}`,
-          ),
-        },
-        onDelete: {
-          service: 'Connect',
-          action: 'disassociateLambdaFunction',
-          parameters: {
-            InstanceId: props.connectInstanceId,
-            FunctionArn: updateSessionContextFunction.functionArn,
-          },
-        },
-        policy: cr.AwsCustomResourcePolicy.fromStatements([
+      // Read the caller's most recent order to pre-populate session context.
+      // Scoped to the SAP orders table + its GSI (customer-scoped query).
+      if (props.sapOrderTableName) {
+        updateSessionContextFunction.addToRolePolicy(
           new iam.PolicyStatement({
-            actions: ['connect:AssociateLambdaFunction', 'connect:DisassociateLambdaFunction'],
-            resources: [props.connectInstanceArn],
+            actions: ['dynamodb:Query'],
+            resources: [
+              `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.sapOrderTableName}`,
+              `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.sapOrderTableName}/index/*`,
+            ],
           }),
-          new iam.PolicyStatement({
-            actions: ['lambda:AddPermission', 'lambda:RemovePermission', 'lambda:GetPolicy'],
-            resources: [updateSessionContextFunction.functionArn],
-          }),
-        ]),
-      });
-      associateUpdateSession.node.addDependency(updateSessionContextFunction);
-
-      new cdk.CfnOutput(this, 'UpdateSessionContextFnArn', {
-        value: updateSessionContextFunction.functionArn,
-        description: 'ARN of the UpdateSessionContext Lambda',
-      });
-    }
-
-    // --- Profile Lookup Lambda (Customer Profiles) ---
-    // Deployed only when customer profiles are enabled. Searches Customer
-    // Profiles for the caller and bridges the result into the Q Connect session
-    // (UpdateSessionData, namespace Custom) so the agent reads it as {{$.Custom.*}}.
-    if (props.customerProfilesEnabled) {
-      const profileLookupFunction = new lambda.Function(this, 'ProfileLookupFunction', {
-        runtime: lambda.Runtime.PYTHON_3_13,
-        handler: 'index.handler',
-        code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/flow/profile-lookup')),
-        layers: [boto3Layer],
-        timeout: cdk.Duration.seconds(15),
-        description: 'Searches Customer Profiles and bridges the result into the Q Connect session',
-        environment: {
-          ASSISTANT_ID: props.assistantId,
-          PROFILES_DOMAIN: props.profilesDomainName ?? '',
-          DEMO_PROFILE_PHONE: props.demoProfilePhone ?? '',
-          LOG_LEVEL: 'INFO',
-        },
-      });
-      this.profileLookupFunction = profileLookupFunction;
+        );
+      }
 
       // Search Customer Profiles (domain-scoped).
-      profileLookupFunction.addToRolePolicy(
+      updateSessionContextFunction.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['profile:SearchProfiles'],
           resources: [
@@ -235,21 +161,20 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
           ],
         }),
       );
-      // CMK-encrypted domain (encryptionEnabled): SearchProfiles requires the
-      // caller to be able to decrypt with the domain's DefaultEncryptionKey.
-      if (props.storageKeyArn) {
-        profileLookupFunction.addToRolePolicy(
-          new iam.PolicyStatement({
-            actions: ['kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
-            resources: [props.storageKeyArn],
-          }),
-        );
-      }
-      // Bridge into the Q Connect session (session resource, as for context injection).
+
+      // CMK-encrypted domain: SearchProfiles requires the caller to be able
+      // to decrypt with the domain's DefaultEncryptionKey.
+      updateSessionContextFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+          resources: [props.storageKeyArn],
+        }),
+      );
+
+      // Allow the Lambda to update Q Connect session data.
       // The session-id segment is a wildcard by necessity: the session ARN is
       // resolved at runtime from contact data and is not known at synth time.
-      // Scope stays bounded to this specific assistant.
-      profileLookupFunction.addToRolePolicy(
+      updateSessionContextFunction.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['wisdom:UpdateSessionData'],
           resources: [
@@ -258,7 +183,9 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
           ],
         }),
       );
-      profileLookupFunction.addToRolePolicy(
+
+      // Allow the Lambda to call DescribeContact (needed to resolve the session ARN).
+      updateSessionContextFunction.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['connect:DescribeContact'],
           resources: [`${props.connectInstanceArn}/contact/*`],
@@ -266,15 +193,15 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
       );
 
       this.associateFlowLambda(
-        'AssociateProfileLookupLambda',
-        profileLookupFunction,
+        'AssociateUpdateSessionLambda',
+        updateSessionContextFunction,
         props.connectInstanceId,
         props.connectInstanceArn,
       );
 
-      new cdk.CfnOutput(this, 'ProfileLookupFnArn', {
-        value: profileLookupFunction.functionArn,
-        description: 'ARN of the ProfileLookup Lambda',
+      new cdk.CfnOutput(this, 'UpdateSessionContextFnArn', {
+        value: updateSessionContextFunction.functionArn,
+        description: 'ARN of the UpdateSessionContext Lambda',
       });
     }
 
