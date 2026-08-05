@@ -15,6 +15,11 @@ Usage:
   scripts/deploy.py --order-file .connect-skill-order.myproj.json
   scripts/deploy.py --order-file ... --synth-only   # stop after render+synth (CI)
 
+The order file carries the orchestration prefs too (claimUkDid, kbContent), so a
+rerun needs no extra flags — `--claim-uk-did` / `--kb-content` remain available
+as one-off overrides. When a step fails after the order file exists, the exact
+rerun command is printed so the process can be restarted once the issue is fixed.
+
 Files:
   .connect-skill-order.<projectName>.json   order (user intent), repo/cwd root
   csp-<projectName>/.connect-skill-values.json  derived render values (generated)
@@ -27,6 +32,7 @@ Files:
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -39,12 +45,19 @@ TEMPLATES = SKILL_DIR / "templates" / "cdk-app"
 
 BOLD, GREEN, YELLOW, RED, NC = "\033[1m", "\033[0;32m", "\033[1;33m", "\033[0;31m", "\033[0m"
 
+# Set once the order file exists; printed on any failure so the user knows how
+# to restart the process after fixing the reported issue.
+RERUN_HINT = None
+
 
 def info(msg): print(f"→ {msg}")
 def ok(msg): print(f"{GREEN}✓ {msg}{NC}")
 def warn(msg): print(f"{YELLOW}⚠ {msg}{NC}")
 def die(msg, code=1):
     print(f"{RED}✗ {msg}{NC}", file=sys.stderr)
+    if code != 0 and RERUN_HINT:
+        print(f"\n{YELLOW}Once fixed, restart the deployment with:{NC}\n"
+              f"  {RERUN_HINT}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -134,13 +147,6 @@ def interview(express=False, project_name=None):
     order["voiceGender"] = ask("Voice", default="feminine",
                                choices=["feminine", "masculine"])
 
-    default_greeting = (
-        f"Hallo, willkommen bei {company}. Wie kann ich Ihnen helfen?"
-        if order["language"] == "de"
-        else f"Hello, welcome to {company}. How can I assist you today?"
-    )
-    order["greeting"] = ask("Greeting the agent opens with", default=default_greeting)
-
     # --- Aperitif side: custom prompts (deterministic variant of the skill's
     # customize course: seed the editable files, pause for the user to edit;
     # render picks them up from the working dir) ---
@@ -152,17 +158,17 @@ def interview(express=False, project_name=None):
         input(f"{BOLD}  Press Enter when done editing (or immediately to keep defaults): {NC}")
 
     # --- Sides: add-on capabilities ---
+    # Human transfer, tool calling, and call recording are ALWAYS on — they
+    # ship built into the default contact flow and are no longer asked about.
     print(f"\n{BOLD}Add-on capabilities{NC} (any combination):")
-    order["transferEnabled"] = ask_bool("  Human transfer (escalate to a live-agent queue)?")
-    order["toolEnabled"] = ask_bool("  Tool calling (sample SAP order API via MCP gateway)?")
-    order["contextInjectionEnabled"] = ask_bool("  Pre-call context injection?")
+    info("Human transfer, tool calling, and call recording (DTMF consent) are "
+         "always included.")
     order["customerProfilesEnabled"] = ask_bool("  Customer Profiles (caller lookup)?", default=True)
-    order["recordingEnabled"] = ask_bool("  Call recording (DTMF consent gate)?")
     order["dataLakeEnabled"] = ask_bool("  Analytics data lake?")
     order["contactEventsEnabled"] = ask_bool("  Contact-events logging (EventBridge)?")
     order["knowledgeBaseEnabled"] = ask_bool("  Knowledge base (Bedrock RAG)?")
     if order["knowledgeBaseEnabled"]:
-        choice = ask("    KB content: (a) bundled sample, (b) own folder, (c) empty for now",
+        choice = ask("    KB content: (a) sample data, (b) add data from disk, (c) empty",
                      default="a", choices=["a", "b", "c"])
         prefs["kbContent"] = {"a": "sample", "b": "path", "c": "skip"}[choice]
         if prefs["kbContent"] == "path":
@@ -176,10 +182,10 @@ def interview(express=False, project_name=None):
     order["frontendEnabled"] = reach == "b"
 
     # --- Digestif: operational ---
-    info("The Connect instance is RETAINED on stack destroy by default "
-         "(retainConnectInstance in lib/config.ts — advanced toggle, not asked here).")
-    order["encryptionEnabled"] = ask_bool(
-        "Encrypt stored data with a customer-managed KMS key?", default=True)
+    info("Data-bearing resources are RETAINED on stack destroy by default "
+         "(retainData in the order file — advanced toggle, not asked here).")
+    info("Stored data (recordings, transcripts, reports, profiles) is always "
+         "encrypted with a customer-managed KMS key.")
     idc = ask_bool("Sign in via IAM Identity Center SSO instead of Connect-managed users?\n"
                    f"  {YELLOW}IRREVERSIBLE at instance creation — switching later means recreating the instance{NC}\n ")
     order["identityCenterEnabled"] = idc
@@ -211,6 +217,49 @@ def confirm_order(order, prefs):
 # Orchestration (identical machinery to the skill: the scripts/ layer)
 # --------------------------------------------------------------------------
 
+def container_runtime_env():
+    """CDK bundles Lambda assets (e.g. the boto3 layer) inside a container.
+    Respect an explicit CDK_DOCKER; otherwise use docker when its daemon is
+    up, else fall back to Finch (starting its VM if needed). Returns env vars
+    to add for the CDK invocations."""
+    if os.environ.get("CDK_DOCKER"):
+        return {}
+    if shutil.which("docker") and \
+            subprocess.run(["docker", "info"], capture_output=True).returncode == 0:
+        return {}
+    finch = shutil.which("finch")
+    if not finch:
+        die("no container runtime for CDK asset bundling — start Docker Desktop, "
+            "or install Finch (brew install finch), then rerun")
+    status = subprocess.run([finch, "vm", "status"],
+                            capture_output=True, text=True).stdout.strip()
+    if status != "Running":
+        info(f"Finch VM is {status or 'unknown'} — starting it for CDK asset bundling...")
+        run([finch, "vm", "init"] if status == "Nonexistent" else [finch, "vm", "start"])
+    ok("using Finch as the container runtime (CDK_DOCKER=finch)")
+    return {"CDK_DOCKER": finch}
+
+
+def prefs_from_order(order, args):
+    """Orchestration prefs live in the order JSON (claimUkDid, kbContent);
+    the CLI flags act as one-off overrides. kbContent: 'sample' | <path> |
+    absent/empty (= skip) — same convention as the --kb-content flag."""
+    kb = args.kb_content if args.kb_content is not None else (order.get("kbContent") or None)
+    return {
+        "claimUkDid": args.claim_uk_did or bool(order.get("claimUkDid", False)),
+        "kbContent": "sample" if kb == "sample" else ("path" if kb else "skip"),
+        "kbContentPath": kb if kb and kb != "sample" else "",
+    }
+
+
+def rel_to_cwd(p):
+    """Render a path relative to the cwd when possible (nicer rerun command)."""
+    try:
+        return str(Path(p).resolve().relative_to(Path.cwd()))
+    except ValueError:
+        return str(p)
+
+
 def stack_output(outputs, stack_suffix, key):
     for stack, values in outputs.items():
         if stack.endswith(stack_suffix):
@@ -226,9 +275,11 @@ def main():
     ap.add_argument("--express", action="store_true", help="defaults for everything (needs -p)")
     ap.add_argument("-p", "--project-name", help="project name (with --express)")
     ap.add_argument("--claim-uk-did", action="store_true",
-                    help="claim a UK phone number after deploy (with --order-file)")
+                    help="claim a UK phone number after deploy "
+                         "(override — normally set as claimUkDid in the order file)")
     ap.add_argument("--kb-content", default=None,
-                    help="knowledge-base content path, or 'sample' (with --order-file)")
+                    help="knowledge-base content path, or 'sample' "
+                         "(override — normally set as kbContent in the order file)")
     ap.add_argument("--synth-only", action="store_true",
                     help="stop after render + synth — no AWS resources created")
     ap.add_argument("--yes", action="store_true", help="skip the order confirmation")
@@ -244,19 +295,36 @@ def main():
         order = json.loads(order_path.read_text())
         if "projectName" not in order:
             die("order file has no projectName")
-        prefs = {
-            "claimUkDid": args.claim_uk_did,
-            "kbContent": ("sample" if args.kb_content == "sample"
-                          else "path" if args.kb_content else "skip"),
-            "kbContentPath": args.kb_content if args.kb_content and args.kb_content != "sample" else "",
-        }
+        prefs = prefs_from_order(order, args)
+        # CLI overrides are folded back into the order file so the JSON stays
+        # the single source of truth and the rerun command needs no flags.
+        updates = {}
+        if args.claim_uk_did and not order.get("claimUkDid"):
+            updates["claimUkDid"] = True
+        if args.kb_content is not None and order.get("kbContent") != args.kb_content:
+            updates["kbContent"] = args.kb_content
+        if updates:
+            order.update(updates)
+            order_path.write_text(json.dumps(order, indent=2) + "\n")
+            ok(f"Order file updated with CLI overrides ({', '.join(updates)}): {order_path}")
     else:
         order, prefs = interview(express=args.express, project_name=args.project_name)
         order_path = cwd / f".connect-skill-order.{order['projectName']}.json"
         if not args.yes:
             confirm_order(order, prefs)
+        # Persist the orchestration prefs in the order file so a rerun with
+        # --order-file reproduces the exact same deployment, no extra flags.
+        order["claimUkDid"] = prefs["claimUkDid"]
+        if prefs["kbContent"] == "sample":
+            order["kbContent"] = "sample"
+        elif prefs["kbContent"] == "path":
+            order["kbContent"] = prefs["kbContentPath"]
         order_path.write_text(json.dumps(order, indent=2) + "\n")
         ok(f"Order written: {order_path}")
+
+    # From here on, any failure prints how to restart the process once fixed.
+    global RERUN_HINT
+    RERUN_HINT = f"python3 {rel_to_cwd(__file__)} --order-file {rel_to_cwd(order_path)}"
 
     project = order["projectName"]
     region = order.get("region", "us-east-1")
@@ -277,11 +345,12 @@ def main():
 
     # --- 5. Build + synth ------------------------------------------------------
     npm = shutil.which("npm") or die("npm not found on PATH")
-    # Overwrite (not merge-conflict with) any pre-existing region env vars —
-    # dict(**os.environ, AWS_REGION=...) raises TypeError when AWS_REGION is
-    # already set (always the case in CI, e.g. CodeBuild).
-    env = {**__import__("os").environ,
-           "AWS_REGION": region, "AWS_DEFAULT_REGION": region, "CDK_DEFAULT_REGION": region}
+    # Dict-literal merge, not dict(**environ, KEY=...): the keyword form raises
+    # "multiple values for keyword argument" when the key is already set in the
+    # caller's environment (e.g. AWS_DEFAULT_REGION exported in the shell).
+    env = {**os.environ,
+           "AWS_REGION": region, "AWS_DEFAULT_REGION": region, "CDK_DEFAULT_REGION": region,
+           **container_runtime_env()}
     if subprocess.run([npm, "ci", "--silent"], cwd=project_dir, env=env).returncode != 0:
         run([npm, "install", "--silent"], cwd=project_dir, env=env)
     run(["npx", "tsc", "--noEmit", "-p", "tsconfig.json"], cwd=project_dir, env=env)
@@ -316,7 +385,36 @@ def main():
         warn("could not resolve all IDs from cdk-outputs.json — smoke test skipped")
 
     # --- 10. Next steps (manual/console-dependent) ---------------------------------
+    # The test-user locale is the deployment's TTS language code (hyphenated,
+    # e.g. de-DE) — setup-test-users.sh stores it on the profile and the flow
+    # sets it as the contact LanguageCode for the Lex bot, so it must be a real
+    # locale, not the region.
+    values = json.loads(values_path.read_text())
+    locale = values.get("ttsLanguageCode", "en-US")
     print(f"\n{BOLD}=== Deployment complete — next steps ==={NC}")
+    # Always required: the CDK deploy creates only the orchestration agent's
+    # $LATEST draft. The background wiring that lets the agent actually CALL the
+    # AgentCore MCP gateway tools happens only when the agent version is
+    # published from the console — without it the agent lists the tools but
+    # never invokes them. There is no API for this publish step.
+    print(f"""
+{YELLOW}REQUIRED{NC} — publish the orchestration AI agent to activate tool calling (console step):
+  The deploy created the agent's $LATEST draft only; tool calling stays inert
+  until the agent version is published from the console (no settings change).
+  1. Connect admin console → AI Agents → open '{project}-orchestrator'
+  2. Press 'Select in Agent Builder'
+  3. Press 'Save and Publish' (nothing needs changing)
+  Until this is done the agent lists the MCP gateway tools but never calls them.""")
+    if order.get("customerProfilesEnabled", True):
+        print(f"""
+{YELLOW}REQUIRED{NC} — import the customer-profile flow module (console step):
+  CloudFormation deploys '{project}-get-customer-profile' as an empty PLACEHOLDER
+  (the Connect CFN handler rejects modules with inputs/outputs/branches).
+  1. Connect admin console → Routing → Flows → Modules → open '{project}-get-customer-profile'
+  2. Import (top-right menu) → select: {project_dir}/flows/get-customer-profile.import.json
+  3. Save & publish the module.
+  This survives redeploys — the placeholder never changes, so CloudFormation
+  won't touch the module again after the import.""")
     if order.get("frontendEnabled"):
         cloudfront_url = stack_output(outputs, "-WebcallWidget", "CloudFrontUrl") or "<see WebcallWidget stack outputs>"
         print(f"""
@@ -328,7 +426,7 @@ Web-call frontend (console steps required):
   3. Copy the widget's security key, then run:
        {SCRIPTS}/setup-widget.sh {project_dir} {cwd}/widget-embed.txt '<SECURITY_KEY>' {region}
   4. Create a sign-in + matching Customer Profile for a test user:
-       {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {region}
+       {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {locale}
      (customer number 0000100042 ties the user to the seeded sample orders)
   5. Open {cloudfront_url} and sign in to place a call.""")
     if order.get("identityCenterEnabled"):
@@ -341,7 +439,7 @@ Identity Center SSO (finish in the console — values from the stack outputs):
     if order.get("customerProfilesEnabled", True) and not order.get("frontendEnabled"):
         print(f"""
 Customer Profiles: create a profile for a real caller (profile-only, no Cognito):
-       {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {region}
+       {SCRIPTS}/setup-test-users.sh {project_dir} <user> <First> <Last> <email> <+E164> 0000100042 {locale}
      (customer number 0000100042 ties the caller to the seeded sample orders)""")
     if not prefs["claimUkDid"] and not order.get("frontendEnabled"):
         print(f"""

@@ -1,0 +1,42 @@
+{
+  "feminine": [
+    {
+      "language": "de-DE",
+      "voice": "Vicki",
+      "recordingConsentVoice": "Willkommen beim Kundenservice von {{companyName}}. Bevor wir Ihnen helfen können, möchten wir Sie um Ihre Einwilligung bitten, dieses Gespräch zur Verbesserung unseres Service aufzuzeichnen.\n\nBitte drücken Sie die 1, um der Aufzeichnung zuzustimmen, oder die 2, wenn Sie nicht einverstanden sind.",
+      "recordingConsentChat": "Wenn Sie zustimmen, wird das Gespräch zur Qualitätssicherung aufgezeichnet. Wenn Sie ablehnen, fahren wir ohne Aufzeichnung fort.",
+      "goodbye": "Auf Wiederhören!",
+      "errorGeneric": "Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut.",
+      "aiAssistantIntro": "Hallo, willkommen bei {{companyName}}. Wie kann ich Ihnen helfen?"
+    },
+    {
+      "language": "en-US",
+      "voice": "Tiffany",
+      "recordingConsentVoice": "Welcome to {{companyName}} customer service. Before we can help you we kindly want to ask you for permission to record this call in order to improve our service.\n\nPlease press 1 to allow a recording of this call or press 2 if you don't want to consent to the recording.",
+      "recordingConsentChat": "If you consent, the conversation will be recorded for quality assurance. If you decline, we will continue without recording.",
+      "goodbye": "Goodbye!",
+      "errorGeneric": "Sorry, something went wrong. Please try again later.",
+      "aiAssistantIntro": "Hello, welcome to {{companyName}}. How can I assist you today?"
+    }
+  ],
+  "masculine": [
+    {
+      "language": "de-DE",
+      "voice": "Lennart",
+      "recordingConsentVoice": "Willkommen beim Kundenservice von {{companyName}}. Bevor wir Ihnen helfen können, möchten wir Sie um Ihre Einwilligung bitten, dieses Gespräch zur Verbesserung unseres Service aufzuzeichnen.\n\nBitte drücken Sie die 1, um der Aufzeichnung zuzustimmen, oder die 2, wenn Sie nicht einverstanden sind.",
+      "recordingConsentChat": "Wenn Sie zustimmen, wird das Gespräch zur Qualitätssicherung aufgezeichnet. Wenn Sie ablehnen, fahren wir ohne Aufzeichnung fort.",
+      "goodbye": "Auf Wiederhören!",
+      "errorGeneric": "Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuchen Sie es später erneut.",
+      "aiAssistantIntro": "Hallo, willkommen bei {{companyName}}. Wie kann ich Ihnen helfen?"
+    },
+    {
+      "language": "en-US",
+      "voice": "Matthew",
+      "recordingConsentVoice": "Welcome to {{companyName}} customer service. Before we can help you we kindly want to ask you for permission to record this call in order to improve our service.\n\nPlease press 1 to allow a recording of this call or press 2 if you don't want to consent to the recording.",
+      "recordingConsentChat": "If you consent, the conversation will be recorded for quality assurance. If you decline, we will continue without recording.",
+      "goodbye": "Goodbye!",
+      "errorGeneric": "Sorry, something went wrong. Please try again later.",
+      "aiAssistantIntro": "Hello, welcome to {{companyName}}. How can I assist you today?"
+    }
+  ]
+}

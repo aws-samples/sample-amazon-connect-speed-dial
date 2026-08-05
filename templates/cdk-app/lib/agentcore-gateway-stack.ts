@@ -22,7 +22,7 @@ import { config } from './config';
 export const SAP_GATEWAY_TARGET = 'SapOrderLookup';
 
 /** Tool names exposed by the SAP order gateway target. */
-export const SAP_GATEWAY_TOOLS = ['get_order_status', 'get_delivery_tracking', 'get_invoice_status'] as const;
+export const SAP_GATEWAY_TOOLS = ['get_order_history', 'get_order_status', 'get_delivery_tracking', 'get_invoice_status'] as const;
 
 export interface AgentCoreGatewayStackProps extends cdk.StackProps {
   instanceAlias: string;
@@ -339,6 +339,17 @@ export class AgentCoreGatewayStack extends BlueprintStack {
       lambdaFunction: sapToolFn,
       toolSchema: bedrockagentcore.ToolSchema.fromInline([
         {
+          name: 'get_order_history',
+          description: 'List all SAP sales orders for the authenticated caller, most recent first. Returns a summary row per order (order number, type, net value, requested delivery date, lifecycle status). Use this when the caller asks what orders they have, about "my orders", or about their most recent/last order without giving an order number — then call get_order_status with a returned order number for full detail. Requires only the authenticated caller\'s customer_number.',
+          inputSchema: {
+            type: bedrockagentcore.SchemaDefinitionType.OBJECT,
+            properties: {
+              customer_number: { type: bedrockagentcore.SchemaDefinitionType.STRING, description: 'SAP customer number of the authenticated caller. MUST be the value from session context ({{$.Custom.customerId}}). Used for access control — only orders belonging to this customer are returned.' },
+            },
+            required: ['customer_number'],
+          },
+        },
+        {
           name: 'get_order_status',
           description: 'Look up SAP sales order status by order number. Returns order header, line items, and derived lifecycle status. Requires the authenticated caller\'s customer_number for access control.',
           inputSchema: {
@@ -378,7 +389,17 @@ export class AgentCoreGatewayStack extends BlueprintStack {
         },
       ]),
     });
-    sapTarget.node.addDependency(gateway);
+    // Order the target strictly AFTER PostCreateConfig, not just after the
+    // gateway. PostCreateConfig calls UpdateGateway (to set the JWT
+    // allowedAudience), which transiently moves the gateway into UPDATING —
+    // and CreateGatewayTarget is rejected with a 400 while the gateway is
+    // UPDATING. Both resources depended only on `gateway`, so CloudFormation
+    // ran them concurrently and the target creation intermittently raced the
+    // update. PostCreateConfig waits for the gateway to return to READY before
+    // it completes, so depending on it guarantees the target sees a stable
+    // gateway. (postCreate already depends on gateway, so that edge is
+    // preserved transitively — same ordering as mcpApplication above.)
+    sapTarget.node.addDependency(postCreate);
 
     new cdk.CfnOutput(this, 'SapOrderTableName', { value: ordersTable.tableName });
     new cdk.CfnOutput(this, 'SapToolFnArn', { value: sapToolFn.functionArn });
@@ -605,7 +626,9 @@ def lambda_handler(event, context):
 
         args = tool_args(event)
 
-        if tool_name == 'get_order_status':
+        if tool_name == 'get_order_history':
+            return handle_get_order_history(args)
+        elif tool_name == 'get_order_status':
             return handle_get_order_status(args)
         elif tool_name == 'get_delivery_tracking':
             return handle_get_delivery_tracking(args)
@@ -715,6 +738,62 @@ def verify_order_ownership(order_number, customer_number):
         ),
     )
     return len(gsi_resp.get('Items', [])) > 0
+
+
+def handle_get_order_history(args):
+    """List all SAP sales orders for a customer, most recent first.
+
+    Customer-scoped: the only input is customer_number, which is also the
+    access-control key — the GSI query is partitioned by CUSTOMER#<num>, so a
+    customer can only ever see their own orders. Returns one summary row per
+    order (number, type, value, requested delivery date, derived lifecycle
+    status) so the agent can answer 'what orders do I have' and then drill into
+    a specific one via get_order_status.
+    """
+    customer_number = normalize_order_number(args.get('customer_number', ''))
+
+    logger.info(f"get_order_history: customer={customer_number}")
+
+    # Access control: customer_number is mandatory (it IS the partition key).
+    if not customer_number:
+        return {'statusCode': 403, 'body': json.dumps({'error': 'customer_number is required for access control'})}
+
+    # GSI1 projects ALL, so this single query returns every record for the
+    # customer (headers, items, deliveries, invoices) without per-order queries.
+    gsi_resp = table.query(
+        IndexName='GSI1',
+        KeyConditionExpression=Key('GSI1PK').eq(f'CUSTOMER#{customer_number}'),
+    )
+    records = gsi_resp.get('Items', [])
+    if not records:
+        return {'statusCode': 200, 'body': json.dumps({'customerNumber': customer_number, 'orders': [], 'message': 'No orders found for this customer'})}
+
+    # Group all records by order number, then summarize each order.
+    by_order = {}
+    for item in records:
+        pk = item.get('PK', '')
+        if not pk.startswith('ORDER#'):
+            continue
+        by_order.setdefault(pk[len('ORDER#'):], []).append(item)
+
+    orders = []
+    for order_number, items in by_order.items():
+        header = next((i for i in items if i.get('SK', '').startswith('HEADER')), None)
+        orders.append({
+            'orderNumber': (header or {}).get('VBELN', order_number),
+            'orderType': (header or {}).get('orderType', ''),
+            'netValue': (header or {}).get('netValue', ''),
+            'currency': (header or {}).get('currency', ''),
+            'requestedDeliveryDate': (header or {}).get('requestedDeliveryDate', ''),
+            'status': derive_order_lifecycle(items),
+        })
+
+    # Most recent first — VBELN is a zero-padded, monotonically increasing SAP
+    # order number, so lexical sort on it matches chronological order.
+    orders.sort(key=lambda o: o['orderNumber'], reverse=True)
+
+    result = {'customerNumber': customer_number, 'orderCount': len(orders), 'orders': orders}
+    return {'statusCode': 200, 'body': json.dumps(result, default=str)}
 
 
 def handle_get_order_status(args):

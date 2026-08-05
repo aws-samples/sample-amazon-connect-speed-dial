@@ -28,17 +28,7 @@ export interface ConnectWidgetConfig {
 export interface DeploymentConfig {
   /** Deployment prefix (project name) — single source of truth for all resource names. */
   prefix: string;
-  /** When true, route the agent's Escalate outcome to a human-transfer queue. */
-  transferEnabled: boolean;
-  /** When true, provision the sample tool Lambda and associate it for in-flow tool calls. */
-  toolEnabled: boolean;
-  /** When true, invoke the session-context Lambda in the flow to inject caller context before the agent starts. */
-  contextInjectionEnabled: boolean;
-  /** When true, open the flow with a DTMF consent gate that records the call (Agent + Customer) on caller consent. */
-  recordingEnabled: boolean;
-  /** When true, create a customer-managed KMS key and encrypt the storage bucket + Connect storage configs (call recordings, chat transcripts, scheduled reports) with it. Defaults to true. */
-  encryptionEnabled: boolean;
-  /** When true, seed a demo Customer Profile and look the caller up in the flow, surfacing the profile to the AI agent via session data. Defaults to true. */
+  /** When true, deploy the Customer Profiles domain, look the caller up in the flow, and surface their identity to the AI agent via Q Connect session data. */
   customerProfilesEnabled: boolean;
   /**
    * When true (default), data-bearing resources survive `cdk destroy`: the
@@ -86,19 +76,15 @@ export interface DeploymentConfig {
 /**
  * Deployment configuration — rendered from the project name at scaffold time.
  *
- * `prefix`, `transferEnabled`, and `toolEnabled` are substituted by the render
- * step. The prefix has
+ * `prefix` and the capability flags are substituted by the render step.
+ * Human transfer, tool calling, and call recording are always on — they ship
+ * built into the default contact flow and have no flags. The prefix has
  * no hardcoded fallback on purpose: `resolvePrefix()` throws if the template is
  * deployed unrendered, so a stale placeholder can never silently become a real
  * resource name.
  */
 export const config: DeploymentConfig = {
   prefix: '{{projectName}}',
-  transferEnabled: {{transferEnabled}},
-  toolEnabled: {{toolEnabled}},
-  contextInjectionEnabled: {{contextInjectionEnabled}},
-  recordingEnabled: {{recordingEnabled}},
-  encryptionEnabled: {{encryptionEnabled}},
   customerProfilesEnabled: {{customerProfilesEnabled}},
   retainData: {{retainData}},
   storageBucketBaseName: 'connect-storage',

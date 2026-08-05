@@ -55,7 +55,7 @@ npx cdk deploy <projectName>-Wisdom --require-approval never --outputs-file cdk-
 ```
 
 For repo-level validation that exercises every capability combination, run the test matrix
-(render + synth + assertions for `transferEnabled` × `toolEnabled`):
+(render + synth + assertions for `customerProfilesEnabled` on/off):
 
 ```bash
 tests/test-all-capabilities.sh
@@ -72,25 +72,27 @@ aware of that interplay.
 1. **`{{key}}`** — render-time. Substituted by `render-templates.sh` from
    `.connect-skill-values.json` (produced by `scripts/build-values.sh` from
    `.connect-skill-order.json`). Used in `.ts`, `package.json`, etc. Example: `{{projectName}}`,
-   `{{companyName}}`, `{{transferEnabled}}`. `resolvePrefix()` in `lib/config.ts` throws if a
+   `{{companyName}}`, `{{customerProfilesEnabled}}`. `resolvePrefix()` in `lib/config.ts` throws if a
    `{{...}}` survives to deploy time, so an unrendered template fails loudly.
 2. **`__PROP__`** — CDK synth-time. Used only in `flows/*.json`. Substituted by
    `contact-flow-stack.ts` from cross-stack values (ARNs, names) that aren't known until synth —
    e.g. `__QUEUE_ARN__`, `__ORCHESTRATION_AGENT_ARN__`, `__LEX_BOT_ALIAS_ARN__`.
    (`__GREETING__` is the bridge case: it maps to the render-time `{{greeting}}`.)
 
-## Capabilities (composable — not the old "flavors")
+## Capabilities
 
-The contact center is composed from independent capability flags in `lib/config.ts`, set from
-the user's order:
+Human transfer (Escalate → human-transfer queue), tool calling (sample tool Lambda + the
+AgentCore gateway's MCP tools wired into the orchestration agent), and call recording (DTMF
+consent gate) are ALWAYS on — they ship built into the default contact flow and have no
+config flags (dynamically toggling them kept breaking the backend wiring).
 
-- `transferEnabled` — routes the agent's Escalate outcome to a human-transfer queue.
-- `toolEnabled` — provisions the sample tool Lambda and wires the AgentCore gateway's MCP tools
-  into the orchestration agent.
+Optional capability flags in `lib/config.ts`, set from the user's order:
+
 - `frontendEnabled` — deploys the web-call frontend (CloudFront + Cognito + API Gateway).
+- `customerProfilesEnabled` — Customer Profiles domain + caller lookup in the flow.
 
-The transfer/tool branches are merged into the base flow (`flows/nova-sonic-base.json`) at synth
-time (see `lib/flow-compose.ts`). Any combination (none / transfer / tool / both) is valid.
+The base flow is `flows/basic-agent-flow.json`, deployed as-is with only ARN/name placeholder
+substitution (the composable synth-time transforms in `lib/flow-compose.ts` are disabled).
 
 > The old three-flavor system (qa / transfer / tool) is **gone** — don't reintroduce it. If you
 > see "flavor" anywhere, it's stale.

@@ -3,12 +3,20 @@ set -euo pipefail
 
 # setup-test-users.sh — provision a test user end to end: a Cognito login for
 # the web-call frontend (temporary password delivered by EMAIL, not printed to
-# the terminal) plus a matching Amazon Connect Customer Profile so the AI agent
-# has this caller's identity and context on a web-call.
+# the terminal) and/or a matching Amazon Connect Customer Profile so the AI
+# agent has this caller's identity and context on a web-call.
 #
-# If the WebcallWidget stack is not deployed (no Cognito pool), the Cognito
-# user creation is skipped and only the Customer Profile is created. This
-# supports phone-only deployments where the profile is resolved by ANI.
+# Both Cognito and Customer Profiles are independently optional:
+#   - WebcallWidget deployed (Cognito pool exists) → creates the Cognito user.
+#   - customerProfilesEnabled (Profiles domain exists) → creates the profile.
+#   - Both present → creates both, linking them via the Cognito sub.
+#   - Neither present → prints a warning and exits without provisioning.
+#
+# This supports all deployment flavours:
+#   - Full (Cognito + Profiles): web-call login + profile context for the agent.
+#   - Phone-only (Profiles, no Cognito): profile resolved by ANI.
+#   - Cognito-only (no Profiles): user can sign in but the agent has no profile
+#     context — the user is expected to bring their own data source.
 #
 # This composes two patterns in one script:
 #   - Cognito user creation (admin-create-user with temp password by email).
@@ -27,13 +35,9 @@ set -euo pipefail
 #   - Customer Profile: existing profile for the same AccountNumber is updated
 #     rather than duplicated.
 #
-# Requires: customerProfilesEnabled (Customer Profiles domain). The
-# WebcallWidget stack (Cognito pool) is optional — if absent, only the
-# Customer Profile is created.
-#
 # Usage:
 #   setup-test-users.sh <project-dir> <username> <first> <last> <email> \
-#       <phone-e164> <customer-number>
+#       [phone-e164] [customer-number] <locale>
 #
 # Args:
 #   project-dir      rendered project directory (contains cdk-outputs.json)
@@ -43,58 +47,72 @@ set -euo pipefail
 #   email            email address — required Cognito attribute AND the
 #                     address the temporary password is sent to
 #   phone-e164       phone number in +<countrycode><number> format (E.164),
-#                     e.g. +15555550100 — stored on the Customer Profile only
+#                     e.g. +15555550100 — required only when Customer Profiles
+#                     is enabled (stored on the profile for ANI lookup)
 #   customer-number  an arbitrary customer/account number for this test user,
-#                     stored as a custom Attribute on the Customer Profile
-#                     (kept separate from the Cognito `sub`, which is used as
-#                     the profile's AccountNumber / web-call lookup key)
-#   region           deploy region (optional). Precedence: this arg, then the
-#                     `region` key in .connect-skill-values.json, then us-east-1.
-#                     (matches setup-widget.sh — do NOT
-#                     just default to us-east-1, or an eu-central-1 deploy's
-#                     Cognito user pool / Customer Profiles domain resolves as
-#                     "does not exist" even though the outputs file has real IDs)
+#                     required only when Customer Profiles is enabled; stored
+#                     as a custom Attribute on the Customer Profile (kept
+#                     separate from the Cognito `sub`, which is used as the
+#                     profile's AccountNumber / web-call lookup key)
+#   locale           Contact locale for the Customer Profile, HYPHENATED
+#                     (e.g. de-DE or en-US). Required — stored as a custom
+#                     attribute on the profile; the flow reads it back and sets
+#                     it as the contact LanguageCode before invoking the Lex
+#                     bot, so it MUST be a real locale that matches the bot's
+#                     locale, NOT a region (e.g. eu-central-1). An underscore
+#                     form (de_DE) is accepted and normalized to de-DE.
+#
+# Region is derived automatically from .connect-skill-values.json in the
+# project directory (or repo root fallback). No explicit region argument needed.
 #
 # Example:
 #   setup-test-users.sh ./finalreview jordan Jordan Lee jordan@example.com \
-#       +15555550100 0000100042
+#       +15555550100 0000100042 en-US
+#   setup-test-users.sh ./finalreview hans Hans Müller hans@example.com \
+#       +4915112345678 0000100043 de-DE
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓ $1${NC}"; }
 info() { echo "→ $1"; }
 fail() { echo -e "${RED}✗ $1${NC}" >&2; exit 1; }
 
-USAGE="usage: setup-test-users.sh <project-dir> <username> <first> <last> <email> <phone-e164> <customer-number> [region]"
+USAGE="usage: setup-test-users.sh <project-dir> <username> <first> <last> <email> [phone-e164] [customer-number] <locale>"
 PROJECT_DIR="${1:?$USAGE}"
 USERNAME="${2:?$USAGE}"
 FIRST="${3:?$USAGE}"
 LAST="${4:?$USAGE}"
 EMAIL="${5:?$USAGE}"
-PHONE="${6:?$USAGE}"
-CUSTOMER_NUMBER="${7:?$USAGE}"
-REGION_ARG="${8:-}"
+PHONE="${6:-}"
+CUSTOMER_NUMBER="${7:-}"
+LOCALE="${8:?$USAGE}"
 
-# Resolve region: explicit arg wins, else .connect-skill-values.json (repo
-# root, two levels up from this script), else us-east-1. Same precedence as
-# setup-widget.sh, and for the same reason: build-values.sh does not emit
-# `region` into the rendered project, and silently defaulting to us-east-1
-# would query the wrong region's resources with no useful error.
+# Normalize + validate the locale. It is stored on the profile and later becomes
+# the contact LanguageCode the flow passes to the Lex bot, so it MUST be a real
+# xx-XX locale, not a region (e.g. eu-central-1) — a bad value makes the Lex
+# call fail and the caller hears the generic error prompt. Accept an underscore
+# form (de_DE) for convenience and normalize it to the hyphenated de-DE the
+# flow / data table use.
+LOCALE="${LOCALE//_/-}"
+if [[ ! "$LOCALE" =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
+  fail "locale '$LOCALE' is not a valid locale — expected the hyphenated form like de-DE or en-US (a region such as eu-central-1 is NOT a locale)"
+fi
+
+# Resolve region from .connect-skill-values.json (project-scoped first, then
+# repo-root fallback). The region must match the deploy target so that Cognito
+# and Customer Profiles API calls hit the right endpoint.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Project-scoped values first (<project-dir>/.connect-skill-values.json);
-# repo-root location is the legacy fallback for pre-project-scoping deployments.
 VALUES_FILE="$PROJECT_DIR/.connect-skill-values.json"
 [[ -f "$VALUES_FILE" ]] || VALUES_FILE="$REPO_ROOT/.connect-skill-values.json"
-if [[ -n "$REGION_ARG" ]]; then
-  REGION="$REGION_ARG"
-elif [[ -f "$VALUES_FILE" ]]; then
+if [[ -f "$VALUES_FILE" ]]; then
   REGION="$(jq -r '.region // "us-east-1"' "$VALUES_FILE")"
 else
-  REGION="us-east-1"
+  fail "Cannot determine region: no .connect-skill-values.json found in $PROJECT_DIR or $REPO_ROOT"
 fi
 info "Region: $REGION"
 
-[[ "$PHONE" =~ ^\+[1-9][0-9]{7,14}$ ]] || fail "phone '$PHONE' is not in E.164 format (e.g. +15555550100)"
+info "Locale: $LOCALE"
+
 [[ "$EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "email '$EMAIL' doesn't look valid"
 
 OUTPUTS="$PROJECT_DIR/cdk-outputs.json"
@@ -121,10 +139,23 @@ else
   info "No WebcallWidget stack found — skipping Cognito user creation (profile-only mode)"
 fi
 
-# --- Resolve the Customer Profiles domain -----------------------------------
+# --- Resolve the Customer Profiles domain (optional) -------------------------
 # Read from CloudFormation stack output directly (cdk-outputs.json may be stale).
+# When customerProfilesEnabled is false the domain won't exist — that's fine,
+# we skip profile creation and only handle Cognito. This supports the scenario
+# where the user has their own data source for customer context.
 DOMAIN="$(cfn_output ConnectInstance CustomerProfilesDomainName)"
-[[ -n "$DOMAIN" ]] || fail "could not find CustomerProfilesDomainName from CloudFormation stack ${STACK_PREFIX}-ConnectInstance — is customerProfilesEnabled and the instance deployed?"
+HAS_PROFILES=false
+if [[ -n "$DOMAIN" ]]; then
+  HAS_PROFILES=true
+  info "Customer Profiles domain: $DOMAIN"
+  # Phone and customer-number are required for profile creation.
+  [[ -n "$PHONE" ]] || fail "phone-e164 argument is required when Customer Profiles is enabled"
+  [[ -n "$CUSTOMER_NUMBER" ]] || fail "customer-number argument is required when Customer Profiles is enabled"
+  [[ "$PHONE" =~ ^\+[1-9][0-9]{7,14}$ ]] || fail "phone '$PHONE' is not in E.164 format (e.g. +15555550100)"
+else
+  info "No Customer Profiles domain found — skipping profile creation (Cognito-only mode)"
+fi
 
 # --- Create (or re-invite) the Cognito user, temp password sent by email ---
 # Skipped entirely when there is no WebcallWidget stack (phone-only deployments).
@@ -176,39 +207,43 @@ if [[ "$HAS_WEBCALL" == "true" ]]; then
 fi
 
 # --- Create (or update) the matching Customer Profile -----------------------
-ATTRS="$(jq -nc --arg cn "$CUSTOMER_NUMBER" '{customerNumber: $cn}')"
+# Skipped entirely when Customer Profiles is not enabled (no domain). This
+# supports Cognito-only deployments where the user brings their own data source.
+if [[ "$HAS_PROFILES" == "true" ]]; then
+  ATTRS="$(jq -nc --arg cn "$CUSTOMER_NUMBER" --arg loc "$LOCALE" '{customerNumber: $cn, locale: $loc}')"
 
-# When we have a Cognito sub (web-call), AccountNumber = sub and the profile is
-# found via _account lookup. When there's no Cognito (phone-only), AccountNumber
-# = customer_number and the profile is found via _phone lookup (ANI match).
-if [[ -n "$SUB" ]]; then
-  ACCOUNT_NUMBER="$SUB"
-  SEARCH_KEY="_account"
-  SEARCH_VALUE="$SUB"
-else
-  ACCOUNT_NUMBER="$CUSTOMER_NUMBER"
-  SEARCH_KEY="_phone"
-  SEARCH_VALUE="$PHONE"
-fi
+  # When we have a Cognito sub (web-call), AccountNumber = sub and the profile is
+  # found via _account lookup. When there's no Cognito (phone-only), AccountNumber
+  # = customer_number and the profile is found via _phone lookup (ANI match).
+  if [[ -n "$SUB" ]]; then
+    ACCOUNT_NUMBER="$SUB"
+    SEARCH_KEY="_account"
+    SEARCH_VALUE="$SUB"
+  else
+    ACCOUNT_NUMBER="$CUSTOMER_NUMBER"
+    SEARCH_KEY="_phone"
+    SEARCH_VALUE="$PHONE"
+  fi
 
-EXISTING="$(aws customer-profiles search-profiles --domain-name "$DOMAIN" --region "$REGION" \
-  --key-name "$SEARCH_KEY" --values "$SEARCH_VALUE" --query 'Items[0].ProfileId' --output text 2>/dev/null || true)"
+  EXISTING="$(aws customer-profiles search-profiles --domain-name "$DOMAIN" --region "$REGION" \
+    --key-name "$SEARCH_KEY" --values "$SEARCH_VALUE" --query 'Items[0].ProfileId' --output text 2>/dev/null || true)"
 
-COMMON_ARGS=(--domain-name "$DOMAIN" --region "$REGION"
-  --account-number "$ACCOUNT_NUMBER" --first-name "$FIRST" --last-name "$LAST"
-  --party-type INDIVIDUAL --phone-number "$PHONE" --email-address "$EMAIL"
-  --attributes "$ATTRS")
+  COMMON_ARGS=(--domain-name "$DOMAIN" --region "$REGION"
+    --account-number "$ACCOUNT_NUMBER" --first-name "$FIRST" --last-name "$LAST"
+    --party-type INDIVIDUAL --phone-number "$PHONE" --email-address "$EMAIL"
+    --attributes "$ATTRS")
 
-if [[ -n "$EXISTING" && "$EXISTING" != "None" ]]; then
-  info "Profile for '$SEARCH_KEY=$SEARCH_VALUE' exists ($EXISTING) — updating"
-  aws customer-profiles update-profile --profile-id "$EXISTING" "${COMMON_ARGS[@]}" >/dev/null \
-    || fail "update-profile failed"
-  ok "Updated profile $EXISTING"
-else
-  info "Creating profile (account=$ACCOUNT_NUMBER) in domain '$DOMAIN'"
-  PID="$(aws customer-profiles create-profile "${COMMON_ARGS[@]}" --query 'ProfileId' --output text)" \
-    || fail "create-profile failed"
-  ok "Created profile $PID"
+  if [[ -n "$EXISTING" && "$EXISTING" != "None" ]]; then
+    info "Profile for '$SEARCH_KEY=$SEARCH_VALUE' exists ($EXISTING) — updating"
+    aws customer-profiles update-profile --profile-id "$EXISTING" "${COMMON_ARGS[@]}" >/dev/null \
+      || fail "update-profile failed"
+    ok "Updated profile $EXISTING"
+  else
+    info "Creating profile (account=$ACCOUNT_NUMBER) in domain '$DOMAIN'"
+    PID="$(aws customer-profiles create-profile "${COMMON_ARGS[@]}" --query 'ProfileId' --output text)" \
+      || fail "create-profile failed"
+    ok "Created profile $PID"
+  fi
 fi
 
 CLOUDFRONT_URL="$(jq -r 'to_entries[] | select(.key | endswith("-WebcallWidget")) | .value.CloudFrontUrl // empty' "$OUTPUTS" | head -n1)"
@@ -220,14 +255,24 @@ echo "=========================================="
 [[ -n "$CLOUDFRONT_URL" ]] && echo "Sign in at:      $CLOUDFRONT_URL"
 echo "Username:        $USERNAME"
 echo "Email:           $EMAIL"
-echo "Phone:           $PHONE"
-echo "Customer number: $CUSTOMER_NUMBER"
+[[ -n "$PHONE" ]] && echo "Phone:           $PHONE"
+[[ -n "$CUSTOMER_NUMBER" ]] && echo "Customer number: $CUSTOMER_NUMBER"
+echo "Locale:          $LOCALE"
 [[ -n "$SUB" ]] && echo "Cognito sub:     $SUB"
 echo ""
-if [[ "$HAS_WEBCALL" == "true" ]]; then
+if [[ "$HAS_WEBCALL" == "true" && "$HAS_PROFILES" == "true" ]]; then
   echo -e "${YELLOW}→ Temporary password was emailed to $EMAIL (not shown here). The user must set a new password on first sign-in.${NC}"
   echo -e "${GREEN}✓ Done.${NC} Sign in and call — the agent will greet $FIRST with this profile's context."
-else
+elif [[ "$HAS_WEBCALL" == "true" && "$HAS_PROFILES" == "false" ]]; then
+  echo -e "${YELLOW}→ Temporary password was emailed to $EMAIL (not shown here). The user must set a new password on first sign-in.${NC}"
+  echo -e "${YELLOW}→ Customer Profiles is not enabled — no profile was created. The agent will not have caller context unless you provide your own data source.${NC}"
+  echo -e "${GREEN}✓ Done.${NC} Cognito user created — sign in at the web-call widget to place a call."
+elif [[ "$HAS_WEBCALL" == "false" && "$HAS_PROFILES" == "true" ]]; then
   echo -e "${YELLOW}→ No web-call frontend — call from $PHONE to reach the agent (profile resolves by ANI).${NC}"
   echo -e "${GREEN}✓ Done.${NC} Customer Profile created — the agent will greet $FIRST with this profile's context."
+else
+  # No Cognito, no profiles — edge case but handle gracefully.
+  echo -e "${YELLOW}→ Neither web-call frontend nor Customer Profiles are enabled.${NC}"
+  echo -e "${YELLOW}→ No user or profile was created. Enable at least one capability to use this script.${NC}"
+  echo -e "${RED}⚠ Nothing was provisioned.${NC}"
 fi

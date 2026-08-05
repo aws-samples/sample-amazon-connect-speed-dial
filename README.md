@@ -16,10 +16,13 @@ What the deployed contact center supports today:
 |---------|:------:|-------|
 | **Nova Sonic 2 voice agent** | ✅ | Q-in-Connect orchestration agent (Claude Haiku 4.5) + self-service answer generation (Nova Pro). |
 | **Knowledge base (RAG)** | ✅ | Optional — Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populated at setup from the bundled sample data or your own folder via `scripts/sync-kb.sh` (re-runnable anytime). |
-| **Human transfer** | ✅ | Optional — routes the agent's Escalate outcome to a live-agent queue. |
-| **Tool calling (MCP)** | ✅ | Optional — ships a sample Lambda tool and wires the AgentCore MCP gateway's tools into the agent. |
-| **Customer Profiles** | ✅ | Optional — uses Amazon Connect Customer Profiles ot personalize the caller experience. Identity get's mapped by phone number and cognito sub when using the web widget. |
-| **Pre-call context injection** | ✅ | Optional — a Lambda pushes caller context into the Q Connect session before the agent starts, so it knows the caller from the first turn (demo context aligned with the gateway's sample tools). |
+| **Human transfer** | ✅ | Always on — routes the agent's Escalate outcome to a live-agent queue. |
+| **Tool calling (MCP)** | ✅ | Always on — ships a sample Lambda tool and wires the AgentCore MCP gateway's tools into the agent. |
+| **Call recording (consent gate)** | 📦 | Ships as a ready-made flow module (`consent-analytics-setup`) — a DTMF/view consent gate that records the call (Agent + Customer) and enables Contact Lens analytics on consent. It is deployed but **not wired into the default flow**; add an `InvokeFlowModule` step to the base flow to enable it (see [Capabilities](#capabilities)). |
+| **Storage encryption** | ✅ | Always on — a customer-managed KMS key (annual rotation) encrypts the storage bucket, Connect storage configs, and the Customer Profiles domain. |
+| **Customer Profiles** | ✅ | Optional (on by default) — uses Amazon Connect Customer Profiles to personalize the caller experience. Identity is mapped by phone number, or by Cognito sub / email when using the web widget. |
+| **Pre-call context injection** | ✅ | Always on with Customer Profiles — a Lambda pushes the caller's identity and most recent order into the Q Connect session before the agent starts, so it knows the caller from the first turn. |
+| **Analytics data lake** | ✅ | Optional — enables the Connect analytics data lake (contact records, flow events, agent stats). |
 | **Web-call frontend** | ✅ | Optional — browser-based calling (CloudFront + Cognito + API Gateway), with guided widget + sign-in setup. |
 | **UK phone number (DID)** | ✅ | Auto-claims a `+44` number and attaches it to the flow; other countries via the console. |
 | **Contact-events logging** | ✅ | Optional — EventBridge rule + Lambda logging contact lifecycle (DISCONNECTED) events to CloudWatch. |
@@ -53,7 +56,7 @@ Trigger the skill in Claude Code or Kiro by saying:
 
 The skill walks you through six phases interactively:
 
-1. **Gather inputs** — project name, company name, greeting, region (US / Frankfurt), language & voice (English/German, feminine/masculine), add-on capabilities (transfer / tool calling / context injection / recording), and how you'll reach it (UK DID / web-call / manual)
+1. **Gather inputs** — project name, company name, greeting, region (US / Frankfurt), language & voice (English/German, feminine/masculine), optional capabilities (Customer Profiles / analytics data lake / contact-events logging / knowledge base), and how you'll reach it (UK DID / web-call / manual)
 2. **Preflight** — validates AWS credentials, CDK bootstrap, Bedrock model access
 3. **Render templates** — generates a CDK project from templates with your config
 4. **Deploy** — runs `cdk deploy --all` to create AWS resources (~20 minutes)
@@ -108,7 +111,7 @@ helper script to run for each.
 
 ## What it deploys
 
-Eight CloudFormation stacks in the selected region (`us-east-1` or `eu-central-1`); plus
+Seven CloudFormation stacks in the selected region (`us-east-1` or `eu-central-1`); plus
 **WebcallWidget** when the web-call frontend is enabled, and **ContactEvents** when
 contact-events logging is enabled:
 
@@ -126,15 +129,29 @@ contact-events logging is enabled:
 
 ## Capabilities
 
-The contact center is composed from independent capability flags (set from your order):
+**Always on** — built into the default contact flow and stacks, with no flags to set:
 
-- **Human transfer** (`transferEnabled`) — routes the agent's Escalate outcome to a live-agent queue.
-- **Tool calling** (`toolEnabled`) — ships a sample Lambda tool and wires the AgentCore gateway's MCP tools into the AI agent.
-- **Pre-call context injection** (`contextInjectionEnabled`) — invokes a Lambda in the flow to push caller context into the Q Connect session before the agent starts.
-- **Web-call frontend** (`frontendEnabled`) — deploys the browser-based calling site.
+- **Human transfer** — the agent's Escalate outcome is routed to a live-agent queue.
+- **Tool calling (MCP)** — a sample Lambda tool plus the AgentCore gateway's MCP tools are wired into the AI agent.
+- **Storage encryption** — a customer-managed KMS key (annual rotation) encrypts the storage bucket, the Connect storage configs, and the Customer Profiles domain.
 
-Any combination is valid; the transfer/tool branches are merged into the base contact flow at
-synth time.
+**Ships as a module (not wired into the default flow):**
+
+- **Call recording + Contact Lens analytics** — the deploy always creates a `consent-analytics-setup` contact-flow module: a consent gate (DTMF on voice, a view on chat) that, on consent, records the call (Agent + Customer) and turns on Contact Lens analytics. The default flow does **not** invoke it, so recording is off out of the box. To enable it, add an `InvokeFlowModule` step referencing the `<project>-consent-analytics-setup` module near the start of the base flow (before the AI Agent block) in the Connect flow designer, then save & publish. The module's consent prompts are localized to the deployment language.
+
+**Optional** — set from your order file (defaults in parentheses); the interview / `deploy.py` asks about each one:
+
+| Order key | Default | What it does |
+|-----------|:-------:|--------------|
+| `customerProfilesEnabled` | `true` | Deploys the Customer Profiles domain, looks the caller up in the flow, and pre-injects their identity + most recent order into the Q Connect session. |
+| `knowledgeBaseEnabled` | `false` | Provisions a Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populate it at setup (sample data or your own folder) or later via `scripts/sync-kb.sh`. |
+| `dataLakeEnabled` | `false` | Enables the Connect analytics data lake (contact records, flow events, agent stats). |
+| `contactEventsEnabled` | `false` | Adds an EventBridge rule + Lambda that log contact lifecycle (DISCONNECTED) events to CloudWatch. |
+| `frontendEnabled` | `false` | Deploys the browser-based web-call site (CloudFront + Cognito + API Gateway). |
+| `identityCenterEnabled` | `false` | Authenticates agents/admins via IAM Identity Center (SAML) instead of Connect-managed users — **irreversible at instance creation** (see below). |
+| `retainData` | `true` | Retains data-bearing resources on `cdk destroy` (see [Tear down](#tear-down)). |
+
+Locale, region, and voice are always chosen (not optional flags): region (`us-east-1` / `eu-central-1`), language (`en` / `de`), and voice (feminine / masculine).
 
 ## IAM Identity Center (SSO) Integration
 
@@ -199,7 +216,7 @@ npx cdk destroy --all
 > | `<project>-connect-storage-…` S3 bucket | call recordings, chat transcripts, reports |
 > | `<project>-kb-docs-…` S3 bucket | knowledge-base documents |
 > | `<project>-gateway-schemas-…` / `<project>-sap-documents-…` S3 buckets | tool schemas, sample documents |
-> | Storage KMS key (when `encryptionEnabled`) | encrypts the above |
+> | Storage KMS key | customer-managed key that encrypts the above |
 > | `<project>-sap-orders` DynamoDB table | sample tool data |
 
 ### Full delete (nothing retained)
@@ -208,37 +225,19 @@ npx cdk destroy --all
 stacks are then synthesized without retention: `npx cdk destroy --all` removes everything,
 including bucket contents. Recommended for test/demo/ephemeral deployments only.
 
-**Option B — clean up after a default deployment.** Run `cdk destroy --all`, then delete the
-retained resources manually:
+**Option B — clean up after a default deployment.** Run `scripts/teardown.sh`, which runs
+`cdk destroy --all` and then sweeps the retained resources (Connect instance, versioned S3
+buckets, sap-orders table, KMS key) plus the two teardown quirks below:
 
 ```bash
-PREFIX=<projectName>; REGION=<region>; ACCOUNT=<account-id>
-
-# 1. Connect instance
-aws connect delete-instance --instance-id <instance-id> --region $REGION
-
-# 2. Buckets (must be emptied first — they are versioned; use the console
-#    "Empty" button, or delete all versions via the CLI)
-aws s3api delete-bucket --bucket $PREFIX-connect-storage-$ACCOUNT-$REGION-an --region $REGION
-# ... repeat for kb-docs / gateway-schemas / sap-documents
-
-# 3. DynamoDB table
-aws dynamodb delete-table --table-name $PREFIX-sap-orders --region $REGION
-
-# 4. KMS key (7-day minimum pending window; billing stops when deletion completes)
-aws kms schedule-key-deletion --key-id <StorageKmsKeyArn from cdk-outputs.json> --pending-window-in-days 7
+scripts/teardown.sh <projectName>   # e.g. scripts/teardown.sh acme-support
 ```
 
-Two teardown quirks to know about:
-
-- If the orchestration AI agent was **published** (console or automation), the publish
-  creates security-profile associations on the numbered agent versions that CloudFormation
-  doesn't manage. If the Wisdom stack goes `DELETE_FAILED` on `AgentSecurityProfile`
-  ("in use"), disassociate the listed entity ARNs with
-  `aws connect disassociate-security-profiles --entity-type AI_AGENT …` and retry the destroy.
-- Delete the stacks **before** manually deleting the instance — removing the instance first
-  strands the `<project>-mcp` App Integrations application (its association only clears after
-  instance deletion propagates; retry `aws appintegrations delete-application` later).
+It resolves the rendered project at `csp-<projectName>`, reads the region from its values
+file, and requires you to type the project name to confirm (set `FORCE_TEARDOWN=1` to skip
+the prompt in automation). It is safely re-runnable — every step tolerates already-deleted
+resources. This also clears the "Instance alias is already used" error you hit when redeploying
+after a failed deploy left the retained instance behind.
 
 ## Development
 
@@ -247,7 +246,7 @@ Two teardown quirks to know about:
 > deploy model and conventions.
 
 ```bash
-tests/test-all-capabilities.sh  # render + cdk synth for every transfer × tool combination
+tests/test-all-capabilities.sh  # render + cdk synth across region × language × voice combinations
 ```
 
 ## Project structure

@@ -2,9 +2,6 @@
   "projectName": "test-blueprint",
   "companyName": "Test Co",
   "region": "us-east-1",
-  "greeting": "Hello, welcome to Test Co customer service",
-  "transferEnabled": false,
-  "toolEnabled": false,
   "frontendEnabled": false,
   "orchestrationModelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
   "answerGenModelId": "us.amazon.nova-pro-v1:0",
@@ -19,5 +16,7 @@
   "selfServiceFallback": "I don't have an answer.",
   "dataLakeEnabled": false,
   "contactEventsEnabled": false,
+  "voiceGender": "feminine",
+  "customerProfilesEnabled": true,
   "retainData": true
 }

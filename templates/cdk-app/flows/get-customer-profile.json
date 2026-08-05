@@ -1,0 +1,356 @@
+{
+    "Version": "2019-10-30",
+    "StartAction": "check if email available",
+    "Metadata": {
+        "entryPointPosition": {
+            "x": -104.8,
+            "y": 44.8
+        },
+        "ActionMetadata": {
+            "check if email available": {
+                "position": {
+                    "x": 3.2,
+                    "y": 106.4
+                },
+                "isFriendlyName": true,
+                "conditionMetadata": [
+                    {
+                        "id": "7c28643d-8d2e-4184-bce5-841e0dc90b04",
+                        "operator": {
+                            "name": "Contains",
+                            "value": "Contains",
+                            "shortDisplay": "contains"
+                        },
+                        "value": "@"
+                    }
+                ]
+            },
+            "multiple": {
+                "position": {
+                    "x": 1285.6,
+                    "y": 675.2
+                },
+                "isFriendlyName": true
+            },
+            "sucess": {
+                "position": {
+                    "x": 1343.2,
+                    "y": 357.6
+                },
+                "isFriendlyName": true
+            },
+            "check if phone number available": {
+                "position": {
+                    "x": 308,
+                    "y": 474.4
+                },
+                "isFriendlyName": true,
+                "conditionMetadata": [
+                    {
+                        "id": "3fdd0dec-79e1-400e-a586-a2351ae666de",
+                        "operator": {
+                            "name": "Contains",
+                            "value": "Contains",
+                            "shortDisplay": "contains"
+                        },
+                        "value": "+"
+                    }
+                ]
+            },
+            "d64cdd34-d221-4e5c-86cd-f7ca74e443d9": {
+                "position": {
+                    "x": 497.6,
+                    "y": 122.4
+                },
+                "parameters": {
+                    "ProfileRequestData": {
+                        "IdentifierName": {
+                            "displayName": "Email"
+                        },
+                        "IdentifierValue": {
+                            "useDynamic": true
+                        }
+                    }
+                },
+                "useDynamic": {
+                    "IdentifierName": true,
+                    "IdentifierValue": true
+                },
+                "customerProfilesAction": "GetCustomerProfile"
+            },
+            "2fbb059c-c884-431a-a610-38300f3d9c0a": {
+                "position": {
+                    "x": 749.6,
+                    "y": 416
+                },
+                "parameters": {
+                    "ProfileRequestData": {
+                        "IdentifierName": {
+                            "displayName": "Phone"
+                        },
+                        "IdentifierValue": {
+                            "useDynamic": true
+                        }
+                    }
+                },
+                "useDynamic": {
+                    "IdentifierName": true,
+                    "IdentifierValue": true
+                },
+                "customerProfilesAction": "GetCustomerProfile"
+            },
+            "unknown": {
+                "position": {
+                    "x": 1305.6,
+                    "y": 519.2
+                },
+                "isFriendlyName": true
+            }
+        },
+        "Annotations": [],
+        "name": "__GET_CUSTOMER_PROFILE_MODULE_NAME__",
+        "description": "Customer profile lookup module \u2014 resolves caller by email then phone, exposes profile fields on $.Customer.",
+        "status": "published",
+        "settings": {
+            "input": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "email": {
+                            "type": "string"
+                        },
+                        "phone_address": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "email",
+                        "phone_address"
+                    ]
+                }
+            },
+            "resultData": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "customerNumber": {
+                            "type": "string"
+                        },
+                        "firstName": {
+                            "type": "string"
+                        },
+                        "lastName": {
+                            "type": "string"
+                        },
+                        "locale": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "customerNumber",
+                        "locale",
+                        "lastName",
+                        "firstName"
+                    ]
+                }
+            },
+            "transitions": {
+                "results": [
+                    {
+                        "name": "success",
+                        "description": ""
+                    },
+                    {
+                        "name": "unknown",
+                        "description": ""
+                    },
+                    {
+                        "name": "multiple",
+                        "description": ""
+                    }
+                ]
+            }
+        },
+        "hash": {}
+    },
+    "Actions": [
+        {
+            "Parameters": {
+                "ComparisonValue": "$.Modules.Input.email"
+            },
+            "Identifier": "check if email available",
+            "Type": "Compare",
+            "Transitions": {
+                "NextAction": "check if phone number available",
+                "Conditions": [
+                    {
+                        "NextAction": "d64cdd34-d221-4e5c-86cd-f7ca74e443d9",
+                        "Condition": {
+                            "Operator": "TextContains",
+                            "Operands": [
+                                "@"
+                            ]
+                        }
+                    }
+                ],
+                "Errors": [
+                    {
+                        "NextAction": "check if phone number available",
+                        "ErrorType": "NoMatchingCondition"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "Result": "multiple",
+                "ResultData": {
+                    "customerNumber": "#multiple",
+                    "firstName": "#multiple",
+                    "lastName": "#multiple",
+                    "locale": "#multiple"
+                }
+            },
+            "Identifier": "multiple",
+            "Type": "EndFlowModuleExecution",
+            "Transitions": {}
+        },
+        {
+            "Parameters": {
+                "Result": "success",
+                "ResultData": {
+                    "customerNumber": "$.Customer.Attributes.customerNumber",
+                    "locale": "$.Customer.Attributes.locale",
+                    "firstName": "$.Customer.FirstName",
+                    "lastName": "$.Customer.LastName"
+                }
+            },
+            "Identifier": "sucess",
+            "Type": "EndFlowModuleExecution",
+            "Transitions": {}
+        },
+        {
+            "Parameters": {
+                "ComparisonValue": "$.Modules.Input.phone_address"
+            },
+            "Identifier": "check if phone number available",
+            "Type": "Compare",
+            "Transitions": {
+                "NextAction": "unknown",
+                "Conditions": [
+                    {
+                        "NextAction": "2fbb059c-c884-431a-a610-38300f3d9c0a",
+                        "Condition": {
+                            "Operator": "TextContains",
+                            "Operands": [
+                                "+"
+                            ]
+                        }
+                    }
+                ],
+                "Errors": [
+                    {
+                        "NextAction": "unknown",
+                        "ErrorType": "NoMatchingCondition"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "ProfileRequestData": {
+                    "IdentifierName": "_email",
+                    "IdentifierValue": "$.Attributes.email"
+                },
+                "ProfileResponseData": [
+                    "FirstName",
+                    "LastName",
+                    "Attributes.customerNumber",
+                    "Attributes.locale"
+                ]
+            },
+            "Identifier": "d64cdd34-d221-4e5c-86cd-f7ca74e443d9",
+            "Type": "GetCustomerProfile",
+            "Transitions": {
+                "NextAction": "sucess",
+                "Errors": [
+                    {
+                        "NextAction": "unknown",
+                        "ErrorType": "NoMatchingError"
+                    },
+                    {
+                        "NextAction": "multiple",
+                        "ErrorType": "MultipleFoundError"
+                    },
+                    {
+                        "NextAction": "unknown",
+                        "ErrorType": "NoneFoundError"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "ProfileRequestData": {
+                    "IdentifierName": "_phone",
+                    "IdentifierValue": "$.Modules.Input.phone_address"
+                },
+                "ProfileResponseData": [
+                    "FirstName",
+                    "LastName",
+                    "Attributes.customerNumber",
+                    "Attributes.locale"
+                ]
+            },
+            "Identifier": "2fbb059c-c884-431a-a610-38300f3d9c0a",
+            "Type": "GetCustomerProfile",
+            "Transitions": {
+                "NextAction": "sucess",
+                "Errors": [
+                    {
+                        "NextAction": "unknown",
+                        "ErrorType": "NoMatchingError"
+                    },
+                    {
+                        "NextAction": "multiple",
+                        "ErrorType": "MultipleFoundError"
+                    },
+                    {
+                        "NextAction": "unknown",
+                        "ErrorType": "NoneFoundError"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "Result": "unknown",
+                "ResultData": {
+                    "customerNumber": "#unknown",
+                    "firstName": "#unknown",
+                    "lastName": "#unknown",
+                    "locale": "#unknown"
+                }
+            },
+            "Identifier": "unknown",
+            "Type": "EndFlowModuleExecution",
+            "Transitions": {}
+        }
+    ],
+    "Settings": {
+        "InputParameters": [],
+        "OutputParameters": [],
+        "Transitions": [
+            {
+                "DisplayName": "Success",
+                "ReferenceName": "Success",
+                "Description": ""
+            },
+            {
+                "DisplayName": "Error",
+                "ReferenceName": "Error",
+                "Description": ""
+            }
+        ]
+    }
+}

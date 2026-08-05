@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ConnectInstanceStack, ConnectInstanceStackProps, DEMO_PROFILE_PHONE } from '../lib/connect-instance-stack';
+import { ConnectInstanceStack, ConnectInstanceStackProps } from '../lib/connect-instance-stack';
 import { QueuesStack } from '../lib/queues-stack';
 import { WisdomStack } from '../lib/wisdom-stack';
 import { ContactFlowStack } from '../lib/contact-flow-stack';
@@ -73,29 +73,29 @@ const wisdom = new WisdomStack(app, `${stackPrefix}-Wisdom`, {
 });
 wisdom.addDependency(instance);
 
-// When tool calling is enabled, the orchestration agent allow-lists the
-// gateway's MCP tools by id and grants them on its security profile. Both only
-// resolve once the gateway is registered as an MCP server integration on the
-// instance (done in the gateway stack), so Wisdom must deploy after it.
-if (config.toolEnabled) {
-  wisdom.addDependency(gateway);
-}
+// The orchestration agent allow-lists the gateway's MCP tools by id and grants
+// them on its security profile. Both only resolve once the gateway is
+// registered as an MCP server integration on the instance (done in the gateway
+// stack), so Wisdom must deploy after it.
+wisdom.addDependency(gateway);
 
 // FlowLambdas is created before ContactFlow so the flow can reference the
-// context-injection Lambda's ARN when contextInjectionEnabled.
+// context-injection Lambda's ARN when customerProfilesEnabled.
 const flowLambdas = new ConnectFlowLambdasStack(app, `${stackPrefix}-FlowLambdas`, {
   env,
   connectInstanceId: instance.instanceId,
   connectInstanceArn: instance.instanceArn,
   assistantId: wisdom.assistantId,
-  contextInjectionEnabled: config.contextInjectionEnabled,
   customerProfilesEnabled: config.customerProfilesEnabled,
   profilesDomainName: instance.customerProfilesDomainName,
   storageKeyArn: instance.storageKeyArn,
-  demoProfilePhone: DEMO_PROFILE_PHONE,
+  // SAP orders table (from the gateway stack) so the context Lambda can
+  // pre-populate the caller's latest order into the session.
+  sapOrderTableName: gateway.sapOrderTableName,
 });
 flowLambdas.addDependency(instance);
 flowLambdas.addDependency(wisdom);
+flowLambdas.addDependency(gateway);
 
 const flow = new ContactFlowStack(app, `${stackPrefix}-ContactFlow`, {
   env,
@@ -105,19 +105,14 @@ const flow = new ContactFlowStack(app, `${stackPrefix}-ContactFlow`, {
   assistantArn: wisdom.assistantArn,
   orchestrationAgentArn: wisdom.orchestrationAgentArn,
   queueArn: queues.defaultQueueArn,
-  transferEnabled: config.transferEnabled,
-  toolEnabled: config.toolEnabled,
-  contextInjectionEnabled: config.contextInjectionEnabled,
-  contextInjectionLambdaArn: flowLambdas.updateSessionContextFunction?.functionArn,
   customerProfilesEnabled: config.customerProfilesEnabled,
-  profileLookupLambdaArn: flowLambdas.profileLookupFunction?.functionArn,
-  recordingEnabled: config.recordingEnabled,
+  contextInjectionLambdaArn: flowLambdas.updateSessionContextFunction?.functionArn,
 });
 flow.addDependency(wisdom);
 flow.addDependency(queues);
-// The flow invokes the context-injection / profile-lookup Lambdas, so they must
-// exist (and be associated with the instance) first.
-if (config.contextInjectionEnabled || config.customerProfilesEnabled) {
+// The flow invokes the context-injection Lambda, so it must exist (and be
+// associated with the instance) first.
+if (config.customerProfilesEnabled) {
   flow.addDependency(flowLambdas);
 }
 
