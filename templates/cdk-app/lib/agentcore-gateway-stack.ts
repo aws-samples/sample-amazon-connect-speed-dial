@@ -22,7 +22,7 @@ import { config } from './config';
 export const SAP_GATEWAY_TARGET = 'SapOrderLookup';
 
 /** Tool names exposed by the SAP order gateway target. */
-export const SAP_GATEWAY_TOOLS = ['get_order_history', 'get_order_status', 'get_delivery_tracking', 'get_invoice_status'] as const;
+export const SAP_GATEWAY_TOOLS = ['get_order_history', 'get_order_status', 'get_delivery_tracking', 'get_invoice_status', 'get_active_promotions'] as const;
 
 export interface AgentCoreGatewayStackProps extends cdk.StackProps {
   instanceAlias: string;
@@ -151,6 +151,24 @@ export class AgentCoreGatewayStack extends BlueprintStack {
     });
     this.gatewayRole = gatewayRole;
 
+    // Gate: a new Connect instance is reported "created" before its public
+    // hostname resolves in DNS. The gateway stabilizes by fetching the OIDC
+    // discovery URL, so creating it too early yields UnknownHostException and a
+    // full rollback. Poll the URL until it serves HTTP 200, then create the
+    // gateway. (Outbound HTTPS only; basic Lambda logging role.)
+    const oidcReadyFn = new lambda.Function(this, 'OidcReadyFn', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      timeout: cdk.Duration.minutes(6),
+      memorySize: 128,
+      description: 'Waits for the Connect instance OIDC discovery URL to resolve and serve 200',
+      code: lambda.Code.fromInline(OIDC_READINESS_HANDLER),
+    });
+    const oidcReady = new cdk.CustomResource(this, 'OidcReadyGate', {
+      serviceToken: oidcReadyFn.functionArn,
+      properties: { DiscoveryUrl: discoveryUrl },
+    });
+
     const gateway = new bedrockagentcore.CfnGateway(this, 'Gateway', {
       name: this.namer.connect('gateway'),
       authorizerType: 'CUSTOM_JWT',
@@ -163,6 +181,8 @@ export class AgentCoreGatewayStack extends BlueprintStack {
         },
       },
     });
+    // Do not create the gateway until the OIDC endpoint is reachable.
+    gateway.node.addDependency(oidcReady);
 
     this.gatewayArn = gateway.attrGatewayArn;
     // CfnGateway only exposes attrGatewayArn; extract the ID from the ARN
@@ -387,6 +407,19 @@ export class AgentCoreGatewayStack extends BlueprintStack {
             required: ['order_number', 'customer_number'],
           },
         },
+        {
+          name: 'get_active_promotions',
+          // No customer_number: promotions are public campaign data, identical
+          // for every caller — the ONE tool an unidentified caller may use.
+          // The e2e tool-call test relies on this tool precisely because it
+          // needs no identity and its answer exists nowhere but the tool.
+          description: 'List the currently active promotions and discount codes. Public campaign information — available to EVERY caller, identified or not; requires no customer number and no arguments. Use this whenever the caller asks about promotions, discounts, offers, deals, or vouchers. Always read the promotion code aloud exactly as returned.',
+          inputSchema: {
+            type: bedrockagentcore.SchemaDefinitionType.OBJECT,
+            properties: {},
+            required: [],
+          },
+        },
       ]),
     });
     // Order the target strictly AFTER PostCreateConfig, not just after the
@@ -593,6 +626,78 @@ def send(event, context, status, data=None, reason=None):
 `;
 
 // ---------------------------------------------------------------------------
+// Inline Python handler for the OIDC-readiness gate custom resource.
+//
+// A freshly-created Connect instance is returned as "created" before its public
+// hostname (<alias>.my.connect.aws) has propagated in DNS. The AgentCore gateway
+// stabilizes by fetching the instance's OIDC discovery URL, so if it is created
+// too soon the backend gets UnknownHostException and the whole stack rolls back.
+// This custom resource polls the discovery URL until it returns HTTP 200, and
+// the CfnGateway depends on it — turning an intermittent race into a deterministic
+// wait. Outbound HTTPS only; no IAM beyond basic Lambda logging. Delete/Update are
+// no-ops (the URL is only gated at first create).
+// ---------------------------------------------------------------------------
+const OIDC_READINESS_HANDLER = `
+import json, logging, time, urllib.request, urllib.error
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def handler(event, context):
+    logger.info("Event: RequestType=%s", event.get('RequestType'))
+    rt = event.get('RequestType')
+    props = event.get('ResourceProperties', {})
+    try:
+        if rt == 'Create':
+            wait_for_oidc(props['DiscoveryUrl'])
+        # Update/Delete: nothing to gate.
+        send(event, context, 'SUCCESS', {'DiscoveryUrl': props.get('DiscoveryUrl', '')})
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        send(event, context, 'FAILED', reason=str(e))
+
+
+def wait_for_oidc(url, max_attempts=60, delay=5):
+    """Poll the OIDC discovery URL until it returns HTTP 200 (DNS + endpoint ready)."""
+    last = None
+    for i in range(max_attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                if r.status == 200:
+                    logger.info(f"OIDC endpoint ready after {i + 1} attempt(s)")
+                    return
+                last = f"HTTP {r.status}"
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+        except Exception as e:  # URLError (DNS/conn), timeout, etc. — expected while propagating
+            last = f"{type(e).__name__}: {e}"
+        logger.info(f"OIDC not ready (attempt {i + 1}/{max_attempts}): {last}")
+        time.sleep(delay)
+    raise TimeoutError(f"OIDC endpoint not ready after {max_attempts * delay}s: {url} ({last})")
+
+
+def send(event, context, status, data=None, reason=None):
+    body = {
+        'Status': status,
+        'Reason': reason or f"See CloudWatch: {context.log_stream_name}",
+        'PhysicalResourceId': event.get('PhysicalResourceId', context.log_stream_name),
+        'StackId': event['StackId'],
+        'RequestId': event['RequestId'],
+        'LogicalResourceId': event['LogicalResourceId'],
+    }
+    if data:
+        body['Data'] = data
+    req = urllib.request.Request(
+        event['ResponseURL'],
+        data=json.dumps(body).encode(),
+        headers={'Content-Type': ''},
+        method='PUT',
+    )
+    urllib.request.urlopen(req)
+`;
+
+// ---------------------------------------------------------------------------
 // Inline Python handler for the SAP order tool Lambda
 // ---------------------------------------------------------------------------
 const SAP_ORDER_TOOL_HANDLER = `
@@ -625,6 +730,10 @@ def lambda_handler(event, context):
         logger.info(f"Tool dispatched: {tool_name}")
 
         args = tool_args(event)
+        # Log the RAW argument values (pre-normalization) so a lookup miss can be
+        # traced to what the model actually sent — a wrong digit count from
+        # ASR/formatting looks identical to a real "no orders" once normalized.
+        logger.info("Raw tool args: %s", json.dumps(args, default=str))
 
         if tool_name == 'get_order_history':
             return handle_get_order_history(args)
@@ -634,6 +743,8 @@ def lambda_handler(event, context):
             return handle_get_delivery_tracking(args)
         elif tool_name == 'get_invoice_status':
             return handle_get_invoice_status(args)
+        elif tool_name == 'get_active_promotions':
+            return handle_get_active_promotions(args)
         else:
             return {'statusCode': 400, 'body': json.dumps({'error': f'Unknown tool: {tool_name}'})}
 
@@ -659,11 +770,27 @@ def tool_args(event):
 
 
 def normalize_order_number(raw):
-    """Strip non-digits and zero-pad to 10 digits (SAP VBELN format)."""
+    """Normalize a spoken/typed SAP number to the 10-digit zero-padded VBELN/KUNNR form.
+
+    SAP order and customer numbers are <=10 digits, stored left-zero-padded to
+    10 (e.g. customer 100042 -> 0000100042). Callers rarely say the padding, so
+    we strip separators and left-pad. Grouping separators are common from a
+    German-locale voice model (100.042, 100 042) and are handled — the dots and
+    spaces are stripped and the six digits pad correctly.
+
+    Limits of this function (NOT a full fix for a wrong digit COUNT): if the
+    spoken/heard digits are themselves wrong — e.g. one extra zero, "1000042"
+    instead of "100042" — that is an in-range 7-digit number and pads to a valid
+    but different id (0001000042). No normalization can recover that; the digit
+    sequence is genuinely ambiguous. Such cases must be fixed upstream (the
+    profile lookup so the number is never dictated, or ASR/model behaviour), not
+    here. What this DOES guard is the >10-digit overflow: reject rather than
+    silently truncate to a valid-but-wrong id.
+    """
     if not raw:
         return ''
     digits = re.sub(r'[^0-9]', '', str(raw))
-    if not digits:
+    if not digits or len(digits) > 10:
         return ''
     return digits.zfill(10)
 
@@ -1020,6 +1147,40 @@ def handle_get_invoice_status(args):
         'invoiceItems': formatted_items,
     }
     return {'statusCode': 200, 'body': json.dumps(result, default=str)}
+
+
+# Current promotions. Static by design: promotions are campaign data, identical
+# for every caller, so there is no per-customer row to look up and no
+# customer_number required — this is the one tool an UNIDENTIFIED caller may
+# use (the agent prompt says so explicitly). That also makes it the e2e
+# tool-call test's target: the promotion codes exist nowhere but here (not in
+# the pre-loaded session context, not in the knowledge base), so their presence
+# in an agent answer proves a live MCP tools/call round trip. If you change a
+# code here, update e2e/testcases/tool-call.json.tpl to match.
+ACTIVE_PROMOTIONS = [
+    {
+        'promotionCode': 'WELCOME15',
+        'title': 'Welcome discount',
+        'description': '15 percent off the first order for new customers.',
+        'discount': '15%',
+        'validUntil': '2027-12-31',
+    },
+    {
+        'promotionCode': 'FREESHIP100',
+        'title': 'Free shipping',
+        'description': 'Free standard shipping on orders above 100 EUR.',
+        'discount': 'Free shipping',
+        'validUntil': '2027-12-31',
+    },
+]
+
+
+def handle_get_active_promotions(args):
+    """List currently active promotions. No arguments, no access control —
+    promotions are public campaign data, the same for every caller."""
+    logger.info("get_active_promotions: %d promotion(s)", len(ACTIVE_PROMOTIONS))
+    result = {'promotionCount': len(ACTIVE_PROMOTIONS), 'promotions': ACTIVE_PROMOTIONS}
+    return {'statusCode': 200, 'body': json.dumps(result, default=str)}
 `;
 
 // ---------------------------------------------------------------------------
@@ -1348,9 +1509,17 @@ def process_document(bucket, key):
 
 
 def normalize_order_number(raw):
-    """Strip non-digits and zero-pad to 10 digits (SAP VBELN format)."""
+    """Strip non-digits and zero-pad to 10 digits (SAP VBELN format).
+
+    Must stay behaviourally identical to the copy in SAP_ORDER_TOOL_HANDLER:
+    ingest writes the DynamoDB keys and the tool queries them, so a divergence
+    here would store data under a key the lookup can't find. >10 digits is
+    rejected rather than truncated, same as the query side.
+    """
     digits = ''.join(c for c in str(raw or '') if c.isdigit())
-    return digits.zfill(10) if digits else ''
+    if not digits or len(digits) > 10:
+        return ''
+    return digits.zfill(10)
 
 
 def resolve_order_number(document):

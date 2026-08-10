@@ -12,7 +12,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # deploy region deterministically instead of relying on shell env vars.)
 "$WRITER" "$ROOT/tests/fixtures/order-express.json" "$TMP/express.json"
 keys=$(jq -r 'keys_unsorted | join(",")' "$TMP/express.json" | tr ',' '\n' | sort | paste -sd, -)
-expected="answerGenModelId,companyName,contactEventsEnabled,customerProfilesEnabled,dataLakeEnabled,frontendEnabled,identityCenterEnabled,kbParsingModelId,knowledgeBaseEnabled,lexLocaleId,orchestrationModelId,projectName,promptLanguage,region,retainData,selfServiceFallback,sonicVoiceId,ttsLanguageCode,voiceGender,voiceId"
+expected="answerGenModelId,companyName,contactEventsEnabled,customerProfilesEnabled,dataLakeEnabled,frontendEnabled,identityCenterEnabled,kbParsingModelId,knowledgeBaseEnabled,lexLocaleId,orchestrationModelId,projectName,promptLanguage,region,retainData,selfServiceFallback,ttsLanguageCode,voiceGender"
 [[ "$keys" == "$expected" ]] || fail "express keys: got [$keys] want [$expected]"
 [[ "$(jq -r '.projectName' "$TMP/express.json")" == "acme-support" ]] || fail "projectName"
 [[ "$(jq -r '.companyName' "$TMP/express.json")" == "My Company" ]] || fail "default companyName"
@@ -98,8 +98,11 @@ echo '{ "projectName": "p15", "companyName": "Say \"hello\" Co" }' > "$TMP/o15.j
 "$WRITER" "$ROOT/tests/fixtures/order-express.json" "$TMP/loc-def.json"
 [[ "$(jq -r '.lexLocaleId' "$TMP/loc-def.json")" == "en_US" ]] || fail "default lexLocaleId"
 [[ "$(jq -r '.ttsLanguageCode' "$TMP/loc-def.json")" == "en-US" ]] || fail "default ttsLanguageCode"
-[[ "$(jq -r '.voiceId' "$TMP/loc-def.json")" == "Tiffany" ]] || fail "default voiceId"
-[[ "$(jq -r '.sonicVoiceId' "$TMP/loc-def.json")" == "tiffany" ]] || fail "default sonicVoiceId"
+# Voice itself is no longer a values field — it is seeded into the prompt-texts
+# data table by voiceGender (see prompt-texts-seed.json / test-region-language.sh).
+# Here we only assert the gender selector defaults to feminine.
+[[ "$(jq -r '.voiceGender' "$TMP/loc-def.json")" == "feminine" ]] || fail "default voiceGender feminine"
+[[ "$(jq -r 'has("voiceId")' "$TMP/loc-def.json")" == "false" ]] || fail "voiceId should no longer be emitted"
 [[ "$(jq -r '.orchestrationModelId' "$TMP/loc-def.json")" == "us.anthropic.claude-haiku-4-5-20251001-v1:0" ]] || fail "default us orchestration model"
 [[ "$(jq -r '.answerGenModelId' "$TMP/loc-def.json")" == "us.amazon.nova-pro-v1:0" ]] || fail "default us answer model"
 
@@ -110,31 +113,26 @@ echo '{ "projectName": "p17", "region": "eu-central-1" }' > "$TMP/o17.json"
 [[ "$(jq -r '.answerGenModelId' "$TMP/v17.json")" == "eu.amazon.nova-pro-v1:0" ]] || fail "eu answer model"
 [[ "$(jq -r '.region' "$TMP/v17.json")" == "eu-central-1" ]] || fail "region must be emitted to values.json for deploy pinning"
 
-# 18. language=de → de_DE locale + de-DE TTS + feminine voices (Sonic: tina;
-# flow TTS: Vicki, since Tina is not in the Polly generative catalog).
+# 18. language=de → de_DE locale + de-DE TTS. (Voice comes from the seed table
+# by voiceGender, asserted in test-region-language.sh, not from values.)
 echo '{ "projectName": "p18", "language": "de" }' > "$TMP/o18.json"
 "$WRITER" "$TMP/o18.json" "$TMP/v18.json"
 [[ "$(jq -r '.lexLocaleId' "$TMP/v18.json")" == "de_DE" ]] || fail "de lexLocaleId"
 [[ "$(jq -r '.ttsLanguageCode' "$TMP/v18.json")" == "de-DE" ]] || fail "de ttsLanguageCode"
-[[ "$(jq -r '.voiceId' "$TMP/v18.json")" == "Vicki" ]] || fail "de feminine flow voice Vicki"
-[[ "$(jq -r '.sonicVoiceId' "$TMP/v18.json")" == "tina" ]] || fail "de feminine sonic voice tina"
+[[ "$(jq -r '.voiceGender' "$TMP/v18.json")" == "feminine" ]] || fail "de default voiceGender feminine"
 # (greeting localization moved to the data table seed — see
 # flows/prompt-texts-seed.json aiAssistantIntro; no greeting in values.)
 
-# 19. masculine voices per language: en→Matthew/matthew, de→Lennart/lennart.
+# 19. voiceGender is emitted verbatim (it selects the seed slice at deploy time).
 echo '{ "projectName": "p19a", "voiceGender": "masculine" }' > "$TMP/o19a.json"
 "$WRITER" "$TMP/o19a.json" "$TMP/v19a.json"
-[[ "$(jq -r '.voiceId' "$TMP/v19a.json")" == "Matthew" ]] || fail "en masculine voice Matthew"
-[[ "$(jq -r '.sonicVoiceId' "$TMP/v19a.json")" == "matthew" ]] || fail "en masculine sonic voice matthew"
+[[ "$(jq -r '.voiceGender' "$TMP/v19a.json")" == "masculine" ]] || fail "en masculine voiceGender"
 echo '{ "projectName": "p19b", "language": "de", "voiceGender": "masculine" }' > "$TMP/o19b.json"
 "$WRITER" "$TMP/o19b.json" "$TMP/v19b.json"
-[[ "$(jq -r '.voiceId' "$TMP/v19b.json")" == "Lennart" ]] || fail "de masculine voice Lennart"
-[[ "$(jq -r '.sonicVoiceId' "$TMP/v19b.json")" == "lennart" ]] || fail "de masculine sonic voice lennart"
+[[ "$(jq -r '.voiceGender' "$TMP/v19b.json")" == "masculine" ]] || fail "de masculine voiceGender"
 
 # 20. German + Frankfurt fixture: de_DE + eu.* together.
 "$WRITER" "$ROOT/tests/fixtures/order-de-frankfurt.json" "$TMP/v20.json"
-[[ "$(jq -r '.voiceId' "$TMP/v20.json")" == "Lennart" ]] || fail "frankfurt-de voiceId"
-[[ "$(jq -r '.sonicVoiceId' "$TMP/v20.json")" == "lennart" ]] || fail "frankfurt-de sonicVoiceId"
 [[ "$(jq -r '.lexLocaleId' "$TMP/v20.json")" == "de_DE" ]] || fail "frankfurt-de lexLocaleId"
 [[ "$(jq -r '.orchestrationModelId' "$TMP/v20.json")" == "eu.anthropic.claude-haiku-4-5-20251001-v1:0" ]] || fail "frankfurt-de eu model"
 

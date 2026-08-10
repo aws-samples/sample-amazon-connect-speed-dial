@@ -84,11 +84,10 @@ US/Virginia, English, feminine voice). Ask one question at a time via AskUserQue
    - Ask: "Which voice?"
    - Options: **Feminine** [default] / **Masculine**
    - Store in order object as: `voiceGender` = `feminine` or `masculine`
-   - Resolves to a Nova 2 Sonic speech-to-speech voice on the bot locale
-     (English → tiffany/matthew, German → tina/lennart) plus a matching
-     generative Polly voice for out-of-bot flow prompts (English →
-     Tiffany/Matthew, German → Vicki/Lennart — Tina is not yet in the Polly
-     catalog, so German-feminine uses Vicki for flow TTS).
+   - Resolves to an Amazon Connect agentic voice used by the flow's Set-voice
+     block (English → KATIE/RONALD, German → VIKTORIA/SEBASTIAN). The agentic
+     catalog is disjoint from Polly's — Polly voice names are not valid under
+     the `connect:agentic` engine.
 
 ### Aperitif side — Custom prompts [Ready, optional]
 
@@ -122,7 +121,7 @@ These files are the source of truth and survive re-renders. If the user keeps th
 
 Future items (for transparency only):
 - **Model tier**: Balanced (Haiku orchestration + Nova Pro answers) / Fast / Best
-- **Voice & persona**: Tiffany (warm & concise) / other Nova Sonic voices
+- **Voice & persona**: KATIE (warm & concise) / other Amazon Connect agentic voices
 
 (The knowledge base is no longer a future item — it is selectable under Sides below.)
 
@@ -603,7 +602,7 @@ To use a number in a different country, or to pick a specific number, instruct t
 
 1. Open: `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers`
 2. Click **Claim a number**, choose country and type, and complete any country-specific regulatory bundle the console asks for
-3. In **Contact flow / IVR**, select the flow named `<projectName>-nova-sonic` and save
+3. In **Contact flow / IVR**, select the flow named `<projectName>-basic-agent-flow` and save
 
 The smoke test will print a warning instead of failing when no number is associated.
 
@@ -666,8 +665,11 @@ Tell the user (there are no settings to change — just save and publish):
 > One last step to activate tool calling — the CDK deploy can't do this part:
 > 1. Sign in to the Connect admin console.
 > 2. Go to **AI Agents**.
-> 3. Select the **`<projectName>-orchestrator`** agent.
-> 4. Press **Select in Agent Builder**.
+> 3. Select the **`<projectName>-orchestrator`** agent by clicking the radio
+>    selector at the left of its row (do **not** click the name — the name opens
+>    a read-only details view with no publish button).
+> 4. Press the **Edit** button in the list toolbar (top-right, between **Delete**
+>    and **Create AI Agent**) to open the Agent Builder editor.
 > 5. Press **Save and Publish** (no settings need changing).
 >
 > After that the agent can call the MCP gateway tools.
@@ -724,7 +726,7 @@ Then walk the user through widget creation and offer to wire it up automatically
 1. Tell the user to create the widget in the console:
    > Open the admin console → **Channels → Communication widgets → Add widget**.
    > Choose a **voice/calling** widget type, point it at the contact flow named
-   > **`<projectName>-nova-sonic`**, add your CloudFront domain (the full
+   > **`<projectName>-basic-agent-flow`**, add your CloudFront domain (the full
    > `<cloudfront-url>`, **including the `https://`**) to the **allowed domains**,
    > and **enable security** (the signed-JWT option). Save. The console then shows
    > an **embed code** (`<script>…</script>`) and a **security key**.
@@ -796,7 +798,7 @@ Your Nova Sonic 2 AI voice agent is deployed!
 
 ▶ ONE STEP LEFT — attach a phone number to start testing:
   1. Open: https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers
-  2. Claim a number, then set its contact flow to "<projectName>-nova-sonic"
+  2. Claim a number, then set its contact flow to "<projectName>-basic-agent-flow"
 
 Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
 Project Dir:    <cwd>/csp-<projectName>

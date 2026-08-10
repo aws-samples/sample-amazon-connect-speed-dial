@@ -55,10 +55,36 @@ export class ContactFlowStack extends BlueprintStack {
       __LEX_BOT_NAME__: this.namer.lex('bot'),
       // Company name — resolved at render time from the values JSON.
       __COMPANY_NAME__: `{{companyName}}`,
-      // TTS voice + language for the set-voice action — resolved at render time
-      // from the chosen language/voice (e.g. Joanna/en-US, Vicki/de-DE).
-      __VOICE_ID__: `{{voiceId}}`,
+      // TTS language for the set-voice action — resolved at render time. The
+      // caller-facing VOICE is not a placeholder here: the flow reads it from
+      // the prompt-texts data table ($.DataTables.GetPrompts.voice), seeded
+      // per-gender from flows/prompt-texts-seed.json. Agentic voice catalog
+      // (console picker subset), by locale:
+      //   en-US: BLAKE BRENDA BROOKE CAROLINE DANIELLE JACQUELINE JAMESON
+      //          JOANNA KATIE MARIAN MATTHEW RONALD TIFFANY
+      //   de-DE: ALINA NICO SEBASTIAN VIKTORIA
+      // These are a disjoint set from Polly (JOANNA/MATTHEW/TIFFANY collide by
+      // NAME only — different audio under this engine) and must be UPPERCASE.
+      // Gender has no metadata in the catalog; the seed's feminine/masculine
+      // assignment (KATIE/RONALD, VIKTORIA/SEBASTIAN) was verified acoustically
+      // by median F0 of the console samples (RONALD 95 / NICO 132 / SEBASTIAN
+      // 144 Hz vs ALINA 197 / VIKTORIA 199 / KATIE 264 Hz — a clean 2-cluster
+      // split) and by ear on live calls. Re-measure if the ids change; do not
+      // infer gender from the name.
       __TTS_LANGUAGE_CODE__: `{{ttsLanguageCode}}`,
+      // Voice provider for the Set-voice block. "connect:agentic" selects
+      // Amazon Connect agentic voice (Connect-hosted); the Polly engines
+      // (standard/neural/generative) and their voice catalog are a different,
+      // disjoint set. Static rather than a values field: the whole blueprint is
+      // built around this provider, and the accompanying voice ids in
+      // prompt-texts-seed.json are only valid for it.
+      //
+      // Getting this string wrong fails at CALL time, not deploy time: any other
+      // value passes CreateContactFlow validation and then takes the Set-voice
+      // Error branch (or silently falls back to Joanna). In particular "Agentic"
+      // is NOT valid. The runtime parses it case-insensitively, but emit exactly
+      // this lowercase form — it is what the console emits.
+      __TTS_ENGINE__: 'connect:agentic',
       // Data table ID/name — populated after the table is created (see below).
       __DATA_TABLE_ID__: '',
       __DATA_TABLE_NAME__: this.namer.connect('prompt-texts'),

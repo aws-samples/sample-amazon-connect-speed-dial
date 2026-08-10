@@ -19,6 +19,28 @@ jq --argjson p "$PROFILES" '.customerProfilesEnabled=$p' "$VALUES" > "$TMP_VALUE
 
 "$ROOT/scripts/render-templates.sh" "$TMP_VALUES" "$SRC" "$DEST"
 
+# Container runtime for CDK asset bundling (the boto3 Lambda layer is built in a
+# container). Without one, `cdk synth` dies with a bare "spawnSync docker ENOENT"
+# inside a LayerVersion stack trace, which reads like a blueprint defect but is
+# purely a missing local dependency. Mirror deploy.py's resolution order —
+# explicit CDK_DOCKER, then docker, then Finch — and say so plainly if neither
+# is available, instead of failing 200 lines later for the wrong reason.
+if [[ -z "${CDK_DOCKER:-}" ]]; then
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    : # docker daemon is up; CDK's default works
+  elif command -v finch >/dev/null 2>&1; then
+    if [[ "$(finch vm status 2>/dev/null)" != "Running" ]]; then
+      echo "SKIP: Finch VM is not running — start it with 'finch vm start' (or 'finch vm init'), or start Docker Desktop" >&2
+      exit 0
+    fi
+    export CDK_DOCKER="$(command -v finch)"
+    echo "using Finch as the container runtime (CDK_DOCKER=$CDK_DOCKER)"
+  else
+    echo "SKIP: no container runtime for CDK asset bundling — start Docker Desktop or install Finch (brew install finch)" >&2
+    exit 0
+  fi
+fi
+
 cd "$DEST"
 npm install --silent 2>&1 | tail -5
 npx cdk synth --quiet 2>&1
@@ -70,13 +92,32 @@ SEED_DEFAULT_LANG=$(jq -r '.Resources | to_entries[] | select(.value.Type=="AWS:
 [[ "$SEED_DEFAULT_LANG" == "en-US" ]] || { echo "FAIL: rendered ttsLanguageCode en-US missing from prompt-texts seed DefaultLanguage (got: $SEED_DEFAULT_LANG)" >&2; exit 1; }
 LEX_LOCALES=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.LocaleId] | join(",")' "$TEMPLATE_PREFIX-Wisdom.template.json")
 
-# Nova 2 Sonic speech-to-speech must be configured on the bot locale:
-# UnifiedSpeechSettings with the region-scoped foundation-model ARN and the
-# lowercase Sonic voice. This is the bot-level half of the S2S configuration;
-# the flow's Generative Set-voice block is the other half.
-LEX_USS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.UnifiedSpeechSettings.SpeechFoundationModel] | first' "$TEMPLATE_PREFIX-Wisdom.template.json")
-echo "$LEX_USS" | grep -q "foundation-model/amazon.nova-2-sonic-v1:0" || { echo "FAIL: Nova 2 Sonic model ARN missing from bot locale UnifiedSpeechSettings (got: $LEX_USS)" >&2; exit 1; }
-echo "$LEX_USS" | grep -q '"VoiceId": "tiffany"' || { echo "FAIL: Sonic voiceId tiffany missing from bot locale UnifiedSpeechSettings (got: $LEX_USS)" >&2; exit 1; }
+# Amazon Connect agentic voice, bot-level half: the locale must request the
+# Advanced ASR model preference. The caller-facing voice is NOT set here — it
+# comes from the flow's Set-voice block — and the old Nova Sonic
+# UnifiedSpeechSettings must be absent, since its own VoiceId took priority
+# during the bot session and would silently override the agentic voice.
+LEX_ASR=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.SpeechRecognitionSettings.SpeechModelPreference] | first' "$TEMPLATE_PREFIX-Wisdom.template.json")
+[[ "$LEX_ASR" == "Advanced" ]] || { echo "FAIL: bot locale SpeechModelPreference is '$LEX_ASR', expected Advanced (agentic voice ASR)" >&2; exit 1; }
+LEX_USS=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Lex::Bot") | .value.Properties.BotLocales[]?.UnifiedSpeechSettings] | map(select(. != null)) | length' "$TEMPLATE_PREFIX-Wisdom.template.json")
+[[ "$LEX_USS" == "0" ]] || { echo "FAIL: bot locale still carries Nova Sonic UnifiedSpeechSettings ($LEX_USS found) — it would override the agentic voice" >&2; exit 1; }
+
+# Agentic voice, flow-level half: the Set-voice block's engine must be the
+# agentic provider, and the voice must be an agentic-catalog id. Anything else
+# (a Polly engine, or "Agentic") deploys fine and then fails at call time.
+FLOW_TTS_ENGINE=$(echo "$FLOW_CONTENT" | grep -o 'connect:agentic' | head -1)
+[[ "$FLOW_TTS_ENGINE" == "connect:agentic" ]] || { echo "FAIL: flow does not set TextToSpeechEngine connect:agentic" >&2; exit 1; }
+echo "$FLOW_CONTENT" | grep -q '"generative"' && { echo "FAIL: flow still sets the Polly 'generative' engine" >&2; exit 1; }
+# The seeded voice must be an uppercase agentic id for the deployed locale
+# (en-US fixture -> KATIE), not a Polly voice name.
+SEED_VOICE=$(jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::CloudFormation::CustomResource") | .value.Properties.Records // empty' "$TEMPLATE_PREFIX-ContactFlow.template.json" | head -1 | python3 -c "
+import json,sys
+raw=sys.stdin.read().strip()
+if not raw: print(''); raise SystemExit
+rows=json.loads(raw)
+print(next((r['voice'] for r in rows if r.get('language')=='en-US'), ''))
+")
+[[ "$SEED_VOICE" == "KATIE" ]] || { echo "FAIL: seeded en-US voice is '$SEED_VOICE', expected the agentic id KATIE" >&2; exit 1; }
 
 echo "$LEX_LOCALES" | grep -q "en_US" || { echo "FAIL: default Lex locale en_US missing (got: $LEX_LOCALES)" >&2; exit 1; }
 

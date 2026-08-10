@@ -28,7 +28,7 @@ What the deployed contact center supports today:
 | **Contact-events logging** | ✅ | Optional — EventBridge rule + Lambda logging contact lifecycle (DISCONNECTED) events to CloudWatch. |
 | **Language selection** | ✅ | English (`en_US`) or German (`de_DE`) — localizes the greeting, agent and self-service prompts, goodbye/error messages, the recording-consent prompt, the Lex bot locale, and the TTS voice/language. Any region × language combination is valid. |
 | **Region selection** | ✅ | `us-east-1` (N. Virginia, default) or `eu-central-1` (Frankfurt). Both run the full Connect + Q-in-Connect + Lex + Nova Sonic voice stack; the Bedrock inference-profile prefix (`us.*` / `eu.*`) is derived from the region. |
-| **Voice selection** | ✅ | Feminine (default) or masculine Nova 2 Sonic speech-to-speech voice, resolved per language (English → tiffany/matthew, German → tina/lennart); out-of-bot flow prompts use a matching generative Polly voice. |
+| **Voice selection** | ✅ | Feminine (default) or masculine **Amazon Connect agentic voice**, resolved per language (English → KATIE/RONALD, German → VIKTORIA/SEBASTIAN). The flow's Set-voice block selects the provider via `TextToSpeechEngine: connect:agentic`; Polly voice names are not valid for it. |
 
 Planned / not yet available:
 
@@ -183,7 +183,8 @@ reference:
 - CDK v2 installed (`npm install -g aws-cdk@2.1128.0`, or via a pinned npx: `npx aws-cdk@2.1128.0`)
 - Node.js 18+
 - Bedrock model access in the target region (`amazon.nova-2-sonic-v1:0` in us-east-1; in
-  eu-central-1, `amazon.nova-pro-v1:0` — Nova Sonic voice is delivered via Amazon Connect there)
+  `amazon.nova-pro-v1:0` in both regions — the voice pipeline is Amazon Connect
+  agentic voice, which is Connect-hosted and needs no Bedrock model access)
 
 ## Runtime artifacts
 

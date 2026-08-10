@@ -269,6 +269,23 @@
                     "x": 640,
                     "y": 200
                 }
+            },
+            "set-language-anonymous": {
+                "position": {
+                    "x": -560,
+                    "y": 160
+                },
+                "children": [
+                    "set-contact-data-anonymous"
+                ],
+                "isSplitModule": true
+            },
+            "set-contact-data-anonymous": {
+                "position": {
+                    "x": -560,
+                    "y": 300
+                },
+                "isSplitModule": true
             }
         },
         "Annotations": [],
@@ -345,7 +362,7 @@
         {
             "Parameters": {
                 "Attributes": {
-                    "VoiceEngine": "generative",
+                    "VoiceEngine": "__TTS_ENGINE__",
                     "VoiceStyle": "none",
                     "FirstName": "$.Modules.ResultData.firstName",
                     "LastName": "$.Modules.ResultData.lastName",
@@ -359,7 +376,7 @@
                 "NextAction": "7d08252d-4609-4d90-83f7-427cf062c183",
                 "Errors": [
                     {
-                        "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                        "NextAction": "set-language-anonymous",
                         "ErrorType": "NoMatchingError"
                     }
                 ]
@@ -376,7 +393,7 @@
                 "NextAction": "GetPrompts",
                 "Errors": [
                     {
-                        "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                        "NextAction": "set-contact-data-anonymous",
                         "ErrorType": "NoMatchingError"
                     }
                 ]
@@ -393,7 +410,7 @@
             "Identifier": "990357be-823d-409a-b931-887c2c7df9d4",
             "Type": "InvokeFlowModule",
             "Transitions": {
-                "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                "NextAction": "set-language-anonymous",
                 "Conditions": [
                     {
                         "NextAction": "set-language",
@@ -405,7 +422,7 @@
                         }
                     },
                     {
-                        "NextAction": "set-language",
+                        "NextAction": "set-language-anonymous",
                         "Condition": {
                             "Operator": "Equals",
                             "Operands": [
@@ -414,7 +431,7 @@
                         }
                     },
                     {
-                        "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                        "NextAction": "set-language-anonymous",
                         "Condition": {
                             "Operator": "Equals",
                             "Operands": [
@@ -425,11 +442,11 @@
                 ],
                 "Errors": [
                     {
-                        "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                        "NextAction": "set-language-anonymous",
                         "ErrorType": "NoMatchingCondition"
                     },
                     {
-                        "NextAction": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
+                        "NextAction": "set-language-anonymous",
                         "ErrorType": "NoMatchingError"
                     }
                 ]
@@ -438,7 +455,7 @@
         {
             "Parameters": {
                 "SkipWhenDTMFBufferEnabled": "false",
-                "Text": "$.DataTables.GetPrompt.errorGeneric"
+                "Text": "$.DataTables.GetPrompts.errorGeneric"
             },
             "Identifier": "85dfc208-0996-4a16-8d0c-7191eca91bb6",
             "Type": "MessageParticipant",
@@ -571,8 +588,8 @@
                     "AliasArn": "__LEX_BOT_ALIAS_ARN__"
                 },
                 "LexSessionAttributes": {
-                    "x-amz-lex:audio:end-timeout-ms:*:*": "1000",
-                    "x-amz-lex:q-in-connect:ai-agent-arn": "__ORCHESTRATION_AGENT_ARN__"
+                    "x-amz-lex:q-in-connect:ai-agent-arn": "__ORCHESTRATION_AGENT_ARN__",
+                    "x-amz-lex:allow-interrupt:*:*": "true"
                 }
             },
             "Identifier": "64a9a73d-207f-40e4-b56e-eb909fa169f0",
@@ -675,6 +692,43 @@
                 "Errors": [
                     {
                         "NextAction": "error-msg",
+                        "ErrorType": "NoMatchingError"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "Attributes": {
+                    "VoiceEngine": "__TTS_ENGINE__",
+                    "VoiceStyle": "none"
+                },
+                "TargetContact": "Current"
+            },
+            "Identifier": "set-language-anonymous",
+            "Type": "UpdateContactAttributes",
+            "Transitions": {
+                "NextAction": "set-contact-data-anonymous",
+                "Errors": [
+                    {
+                        "NextAction": "set-contact-data-anonymous",
+                        "ErrorType": "NoMatchingError"
+                    }
+                ]
+            }
+        },
+        {
+            "Parameters": {
+                "TargetContact": "Current",
+                "LanguageCode": "__TTS_LANGUAGE_CODE__"
+            },
+            "Identifier": "set-contact-data-anonymous",
+            "Type": "UpdateContactData",
+            "Transitions": {
+                "NextAction": "GetPrompts",
+                "Errors": [
+                    {
+                        "NextAction": "GetPrompts",
                         "ErrorType": "NoMatchingError"
                     }
                 ]
