@@ -10,8 +10,6 @@
   "identityCenterEnabled": false,
   "lexLocaleId": "en_US",
   "ttsLanguageCode": "en-US",
-  "voiceId": "Tiffany",
-  "sonicVoiceId": "tiffany",
   "promptLanguage": "English",
   "selfServiceFallback": "I don't have an answer.",
   "dataLakeEnabled": false,

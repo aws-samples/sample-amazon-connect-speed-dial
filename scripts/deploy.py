@@ -420,7 +420,7 @@ def main():
         print(f"""
 Web-call frontend (console steps required):
   Web-call site URL:  {cloudfront_url}
-  1. Connect admin console → Communication widgets → create a widget for flow '{project}-nova-sonic'
+  1. Connect admin console → Communication widgets → create a widget for flow '{project}-basic-agent-flow'
      — under allowed domains, add the site URL above ({cloudfront_url})
   2. Copy the FULL <script> embed snippet into a file: {cwd}/widget-embed.txt
   3. Copy the widget's security key, then run:
@@ -444,7 +444,7 @@ Customer Profiles: create a profile for a real caller (profile-only, no Cognito)
     if not prefs["claimUkDid"] and not order.get("frontendEnabled"):
         print(f"""
 Phone number (manual): Connect console → Phone numbers → Claim a number,
-  then set its contact flow to '{project}-nova-sonic'.""")
+  then set its contact flow to '{project}-basic-agent-flow'.""")
     if order.get("knowledgeBaseEnabled") and prefs["kbContent"] == "skip":
         print(f"""
 Knowledge base is EMPTY. Populate anytime:

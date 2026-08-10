@@ -825,30 +825,31 @@ export class WisdomStack extends BlueprintStack {
       botLocales: [{
         localeId: '{{lexLocaleId}}',
         nluConfidenceThreshold: 0.4,
-        // Nova 2 Sonic speech-to-speech on the bot locale: one unified model
-        // handles speech understanding AND generation (prosody-aware, native
-        // barge-in), replacing the default ASR + downstream-TTS pipeline.
-        // The model ARN is region-derived (same account-less Bedrock
-        // foundation-model ARN in every supported region). The voiceId is the
-        // lowercase Nova voice (e.g. tina, matthew) and is authoritative for
-        // the caller-facing voice during the bot session — it takes priority
-        // over the flow's Set-voice block and over the legacy
-        // x-amz-lex:audio:speaker-model-voice-override session attribute.
-        // The flow's Set-voice block still governs TTS prompts played outside
-        // the bot session (goodbye/error/consent messages).
-        unifiedSpeechSettings: {
-          speechFoundationModel: {
-            modelArn: cdk.Arn.format({
-              partition: this.partition,
-              service: 'bedrock',
-              region: this.region,
-              account: '',
-              resource: 'foundation-model',
-              resourceName: 'amazon.nova-2-sonic-v1:0',
-              arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
-            }),
-            voiceId: '{{sonicVoiceId}}',
-          },
+        // Amazon Connect agentic voice — the ASR half of the feature.
+        //
+        // "Advanced" selects the enhanced streaming recognizer that agentic
+        // voice uses: it predicts end-of-turn from the caller's speech instead
+        // of relying only on a fixed silence window, which is what makes turn
+        // taking sound natural. This is the bot-level counterpart to the flow's
+        // Set-voice block (TextToSpeechEngine "connect:agentic", the TTS half) —
+        // the feature needs BOTH halves, and the caller-facing voice comes from
+        // the flow, not from here.
+        //
+        // This REPLACES the previous Nova 2 Sonic speech-to-speech config
+        // (unifiedSpeechSettings.speechFoundationModel). The two are alternative
+        // architectures for the same slot, not layers: Sonic's own voiceId was
+        // authoritative during the bot session and took priority over the flow's
+        // Set-voice block, so leaving it in place would silently override the
+        // agentic voice and the change would appear to do nothing. Nova Sonic
+        // also only supports a 4-voice launch set (Matthew/Amy/Olivia/Lupe)
+        // selected with provider "Amazon", which is not the agentic catalog.
+        //
+        // speechModelPreference is a free-form string in CloudFormation, so an
+        // invalid value is not caught at synth time. "Advanced" is accepted by
+        // the live UpdateBotLocale API (verified directly) even though older
+        // bundled service models only enumerate Standard/Neural/Deepgram.
+        speechRecognitionSettings: {
+          speechModelPreference: 'Advanced',
         },
         intents: [
           {

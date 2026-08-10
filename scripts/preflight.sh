@@ -70,14 +70,11 @@ else
 fi
 
 # 4. Check Bedrock reachability in the target region.
-# us-east-1: the Nova Sonic voice model is listable and is the canonical probe.
-# eu-central-1: Nova Sonic is delivered via Amazon Connect (not directly
-#   listable in Bedrock there), so probe the answer-gen base model instead.
-if [[ "$REGION" == "eu-central-1" ]]; then
-  BEDROCK_MODEL="${NOVA_MODEL_ID:-amazon.nova-pro-v1:0}"
-else
-  BEDROCK_MODEL="${NOVA_MODEL_ID:-amazon.nova-2-sonic-v1:0}"
-fi
+# Probe the answer-generation base model: it is a real dependency of the
+# deployment in every region. (This used to probe amazon.nova-2-sonic-v1:0,
+# which is no longer used — the voice pipeline is Amazon Connect agentic voice,
+# Connect-hosted rather than a Bedrock model the account has to enable.)
+BEDROCK_MODEL="${NOVA_MODEL_ID:-amazon.nova-pro-v1:0}"
 info "Checking Bedrock model access for $BEDROCK_MODEL in $REGION..."
 if aws bedrock get-foundation-model --model-identifier "$BEDROCK_MODEL" --region "$REGION" >/dev/null 2>&1; then
   ok "Bedrock model $BEDROCK_MODEL accessible"
