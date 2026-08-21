@@ -103,4 +103,55 @@ If AWS changes the block schema:
 1. Build a flow with the AI Agent block in the Connect console.
 2. `aws connect describe-contact-flow --instance-id <id> --contact-flow-id <id> --region <region> --query 'ContactFlow.Content' --output text | python3 -m json.tool`
 3. Diff against `references/connect-ai-agent-block.raw.json`.
-4. Update `templates/cdk-app/flows/nova-sonic-*.json` to match.
+4. Update `templates/cdk-app/flows/basic-agent-flow.json` to match.
+
+## AgentCore MCP tool wiring — captured naming conventions
+
+The blueprint wires the AgentCore gateway's tools into the orchestration AI agent entirely in
+CDK (no console steps). Three pieces must all be present, or the deploy fails — they were
+captured from a console-configured agent and the exact strings matter:
+
+1. **MCP server integration** (`AgentCoreGatewayStack`) — the gateway is registered with the
+   instance via an AppIntegrations `CfnApplication` (`applicationType: 'MCP_SERVER'`,
+   `accessUrl` = the gateway's
+   `https://<gatewayId>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp` endpoint) plus a
+   Connect `CfnIntegrationAssociation` (`integrationType: 'APPLICATION'`, `instanceId` = the
+   instance **ARN**). The application's `namespace` is set to the bare gateway id. This is the
+   CDK equivalent of the console's **Add integration → MCP server** flow;
+   `CreateIntegrationAssociation` has no dedicated MCP type — `APPLICATION` is correct (the API
+   docs prose omits it, but the enum includes it).
+
+2. **Security-profile grant** (`WisdomStack`) — the AI-agent `CfnSecurityProfile` carries an
+   `applications` entry with **`type: 'MCP'`** (required — without it Connect treats it as a
+   third-party app that only accepts `ACCESS` and rejects the tool ids with "Invalid application
+   permission found"), `namespace` = the gateway id, and `applicationPermissions` = the AgentCore
+   tool names (`<target>___<tool>`, e.g. `SapOrderLookup___get_order_status`). Without this grant
+   the Agent Designer shows "Insufficient Permissions" and the agent update is rejected.
+
+3. **Agent tool allow-list** (`WisdomStack`) — each tool is a `MODEL_CONTEXT_PROTOCOL` entry in
+   the orchestrator's `toolConfigurations`:
+   - `toolName`: the AgentCore tool name, `<target>___<tool>` (e.g.
+     `SapOrderLookup___get_order_status`)
+   - `toolId`: the **namespace-qualified** id, `gateway_<gatewayId>__<target>___<tool>` (e.g.
+     `gateway_finalreview-gateway-odaj4wxasg__SapOrderLookup___get_order_status`). This mirrors
+     the built-in Retrieve tool's `aws_service__qconnect_Retrieve` (`<namespace>__<tool>`). Using
+     the bare `<target>___<tool>` as the id fails with "MCP tool with ID … not found in MCP
+     tools".
+   - Do **not** set `description` on a gateway-sourced MCP tool — it's owned by the MCP server
+     and QConnect rejects an override (400).
+
+   AgentCore namespaces a Lambda target's tools as `<targetName>___<toolName>` (the SAP order
+   tool Lambda parses the trailing `___` segment of `bedrockAgentCoreToolName`). The gateway
+   exposes five tools via this target — the canonical list is `SAP_GATEWAY_TOOLS` in
+   `lib/agentcore-gateway-stack.ts`: `get_order_history`, `get_order_status`,
+   `get_delivery_tracking`, `get_invoice_status` and `get_active_promotions`, backed by a
+   DynamoDB table seeded with sample SAP SD order-to-cash data.
+
+**Ordering:** `WisdomStack` depends on `AgentCoreGatewayStack` (the gateway must be a registered
+MCP server on the instance before the agent that references its tools is created).
+
+**How to re-capture these strings** if AWS changes the schema: configure the tools on an agent in
+the console, **publish** the agent version, then `aws qconnect get-ai-agent …` and
+`aws connect list-security-profile-applications …` and read the live `toolId` /
+`applicationPermissions`. (Note: the console's draft must be **published** before the API
+reflects the new tools.)

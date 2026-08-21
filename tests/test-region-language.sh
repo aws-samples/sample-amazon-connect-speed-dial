@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CSP=(npm --silent --prefix "$ROOT/cli" run csp --)
 SRC="$ROOT/templates/cdk-app"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -13,8 +14,8 @@ check() {
   rm -rf "$dest"
   jq -n --arg r "$region" --arg l "$language" --arg g "$gender" \
     '{projectName:"loc-test", region:$r, language:$l, voiceGender:$g}' > "$order"
-  "$ROOT/scripts/build-values.sh" "$order" "$values" >/dev/null
-  "$ROOT/scripts/render-templates.sh" "$values" "$SRC" "$dest" >/dev/null
+  "${CSP[@]}" values "$order" "$values" >/dev/null
+  "${CSP[@]}" render "$values" "$SRC" "$dest" >/dev/null
 
   # The flow must set the contact LanguageCode so Connect calls the Lex V2 bot
   # with the matching locale; without it the contact defaults to en_US and a

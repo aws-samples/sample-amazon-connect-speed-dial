@@ -9,30 +9,32 @@ set -euo pipefail
 # model formats numbers with grouping separators, and the caller/ASR can add
 # stray digits. The old normalizer stripped separators then blind zero-padded,
 # so a >10-digit or mis-grouped value became a different, valid-looking id and
-# the DynamoDB query missed. The function is embedded as inline Python inside
-# agentcore-gateway-stack.ts (twice: the runtime tool and the ingest handler);
-# this extracts the runtime copy and exercises it directly, so a regression in
-# the real shipped code is caught rather than a paraphrase.
+# the DynamoDB query missed. The function ships in two handlers (the runtime
+# tool lambda/tools/sap-order and the ingest lambda/tools/sap-document-ingest,
+# which must stay behaviourally identical — write side and query side share
+# the DynamoDB key format); this exercises BOTH copies directly, so a
+# regression or divergence in the real shipped code is caught.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-STACK="$ROOT/templates/cdk-app/lib/agentcore-gateway-stack.ts"
+TOOLS_DIR="$ROOT/templates/cdk-app/lambda/tools"
 
-python3 - "$STACK" <<'PY'
+python3 - "$TOOLS_DIR" <<'PY'
 import re, sys, types
 
-src = open(sys.argv[1]).read()
+tools_dir = sys.argv[1]
 
-# Pull the runtime SAP tool handler (the first inline Python block) and grab
-# just the normalize_order_number def out of it.
-m = re.search(r'const SAP_ORDER_TOOL_HANDLER = `(.*?)`;', src, re.S)
-assert m, "SAP_ORDER_TOOL_HANDLER inline code not found"
-handler = m.group(1)
-fn = re.search(r'\ndef normalize_order_number\(raw\):.*?(?=\n\ndef )', handler, re.S)
-assert fn, "normalize_order_number not found in the tool handler"
+def load_normalize(handler_path):
+    src = open(handler_path).read()
+    fn = re.search(r'\ndef normalize_order_number\(raw\):.*?(?=\n\ndef )', src, re.S)
+    assert fn, f"normalize_order_number not found in {handler_path}"
+    mod = types.ModuleType("sap_norm")
+    mod.re = re
+    exec(fn.group(0), mod.__dict__)
+    return mod.normalize_order_number
 
-mod = types.ModuleType("sap_norm")
-mod.re = re
-exec(fn.group(0), mod.__dict__)
-normalize = mod.normalize_order_number
+normalizers = {
+    'sap-order (query side)': load_normalize(f"{tools_dir}/sap-order/index.py"),
+    'sap-document-ingest (write side)': load_normalize(f"{tools_dir}/sap-document-ingest/index.py"),
+}
 
 CANON = '0000100042'   # seeded customer 100042
 cases = [
@@ -51,23 +53,26 @@ cases = [
     ('1.000.000.0429','', 'over-grouped to 11 digits -> rejected'),
 ]
 fails = []
-for raw, exp, note in cases:
-    got = normalize(raw)
-    ok = got == exp
-    print(f"  {'ok ' if ok else 'BAD'} {str(raw)!r:22s} -> {got!r:14s} (expect {exp!r}) — {note}")
-    if not ok:
-        fails.append(f"{raw!r}: got {got!r}, expected {exp!r} ({note})")
+for name, normalize in normalizers.items():
+    print(f"-- {name}")
+    for raw, exp, note in cases:
+        got = normalize(raw)
+        ok = got == exp
+        print(f"  {'ok ' if ok else 'BAD'} {str(raw)!r:22s} -> {got!r:14s} (expect {exp!r}) — {note}")
+        if not ok:
+            fails.append(f"{name} / {raw!r}: got {got!r}, expected {exp!r} ({note})")
 
-# Honesty check: a wrong DIGIT COUNT (extra zero) is NOT recoverable here and
-# this test does not pretend otherwise — 1000042 is a valid 7-digit id and
-# pads to a different customer. Documented as an upstream problem, asserted so
-# nobody later "fixes" the normalizer to mangle it into 100042.
-assert normalize('1000042') == '0001000042', "7-digit input should pad as-is, not be guessed into 100042"
+    # Honesty check: a wrong DIGIT COUNT (extra zero) is NOT recoverable here and
+    # this test does not pretend otherwise — 1000042 is a valid 7-digit id and
+    # pads to a different customer. Documented as an upstream problem, asserted so
+    # nobody later "fixes" the normalizer to mangle it into 100042.
+    assert normalize('1000042') == '0001000042', \
+        f"{name}: 7-digit input should pad as-is, not be guessed into 100042"
 
 if fails:
     print("\nFAIL:", file=sys.stderr)
     for f in fails:
         print("  " + f, file=sys.stderr)
     sys.exit(1)
-print("PASS: normalize handles grouping + rejects overflow; wrong-digit-count left to upstream")
+print("PASS: both copies handle grouping + reject overflow; wrong-digit-count left to upstream")
 PY

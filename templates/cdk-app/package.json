@@ -12,16 +12,16 @@
   },
   "devDependencies": {
     "@types/jsonwebtoken": "9.0.10",
-    "@types/node": "20.19.43",
-    "aws-cdk": "2.1128.0",
-    "esbuild": "0.20.2",
+    "@types/node": "26.1.2",
+    "aws-cdk": "2.1135.0",
+    "esbuild": "0.28.1",
     "ts-node": "10.9.2",
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@cdklabs/cdk-construct-connect-datalake": "0.0.16",
-    "aws-cdk-lib": "2.260.0",
-    "constructs": "10.6.0",
+    "@cdklabs/cdk-construct-connect-datalake": "0.0.21",
+    "aws-cdk-lib": "2.263.0",
+    "constructs": "10.8.1",
     "jsonwebtoken": "9.0.3",
     "source-map-support": "0.5.21"
   }

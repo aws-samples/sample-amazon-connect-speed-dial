@@ -40,7 +40,7 @@ export class WebcallWidgetStack extends BlueprintStack {
     // S3 Bucket for static website hosting
     // =========================================================================
     const websiteBucket = new s3.Bucket(this, 'WebsiteBucket', {
-      bucketNamePrefix: this.namer.connect('webcall-site'),
+      bucketNamePrefix: this.namer.bucketPrefix('webcall-site'),
       bucketNamespace: s3.BucketNamespace.ACCOUNT_REGIONAL,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -149,7 +149,7 @@ export class WebcallWidgetStack extends BlueprintStack {
     // =========================================================================
     // The secret is created with a placeholder value (Secrets Manager rejects an
     // empty SecretString), then the real signing key is written after deploy via
-    // `aws secretsmanager put-secret-value` (see scripts/setup-widget.sh). The
+    // `aws secretsmanager put-secret-value` (see `csp setup-widget`). The
     // token Lambda treats the placeholder as "not yet configured".
     // Mapping: widgetId -> secretArn (passed to Lambda as JSON env var)
     const widgetSecretMap: Record<string, string> = {};
@@ -159,7 +159,7 @@ export class WebcallWidgetStack extends BlueprintStack {
         secretName: `${this.prefix}-widget-secret-${widget.id}`,
         description:
           `Connect widget signing key for widget ${widget.id}. ` +
-          'Set via scripts/setup-widget.sh (put-secret-value) after deploying.',
+          'Set via "csp setup-widget" (put-secret-value) after deploying.',
         secretStringValue: cdk.SecretValue.unsafePlainText('PLACEHOLDER_SET_VIA_SETUP_WIDGET'),
       });
       widgetSecretMap[widget.id] = secret.secretArn;

@@ -38,8 +38,6 @@ export interface DeploymentConfig {
    * bucket contents (autoDeleteObjects).
    */
   retainData: boolean;
-  /** Base name for the Connect data-storage S3 bucket. Combined with the project prefix and AWS account ID to form the full bucket name: `${prefix}-${storageBucketBaseName}-${accountId}` — the prefix keeps the (globally-unique) bucket name distinct across deployments in the same account. */
-  storageBucketBaseName: string;
   /**
    * When true, deploy the sample web-call agent frontend (CloudFront + Cognito +
    * API Gateway + token Lambda). The stack deploys whenever this is true; widget
@@ -73,52 +71,43 @@ export interface DeploymentConfig {
   connectWidgets: ConnectWidgetConfig[];
 }
 
-/**
- * Deployment configuration — rendered from the project name at scaffold time.
- *
- * `prefix` and the capability flags are substituted by the render step.
- * Human transfer, tool calling, and call recording are always on — they ship
- * built into the default contact flow and have no flags. The prefix has
- * no hardcoded fallback on purpose: `resolvePrefix()` throws if the template is
- * deployed unrendered, so a stale placeholder can never silently become a real
- * resource name.
- */
-export const config: DeploymentConfig = {
-  prefix: '{{projectName}}',
-  customerProfilesEnabled: {{customerProfilesEnabled}},
-  retainData: {{retainData}},
-  storageBucketBaseName: 'connect-storage',
-  frontendEnabled: {{frontendEnabled}},
-  dataLakeEnabled: {{dataLakeEnabled}},
-  contactEventsEnabled: {{contactEventsEnabled}},
-  knowledgeBaseEnabled: {{knowledgeBaseEnabled}},
-  identityCenterEnabled: {{identityCenterEnabled}},
-  promptLanguage: '{{promptLanguage}}',
+// Values are populated by `csp render` from the user's order.
+// The .ts file has no placeholders so it stays valid TypeScript in the
+// unrendered template — the render step overwrites `deployment-values.json`.
+// The checked-in JSON has `prefix: ""` on purpose: `resolvePrefix()` throws
+// on an empty prefix, so an unrendered template fails loudly at deploy time.
+import deploymentValues from './deployment-values.json';
 
-  // Connect Widget Frontend — add entries after creating widget(s) in Connect console
-  // Example:
-  // connectWidgets: [
-  //   { id: 'widget-uuid', snippetId: 'base64...', scriptUrl: 'https://...my.connect.aws/...' },
-  // ],
-  connectWidgets: [],
+export const config: DeploymentConfig = {
+  ...deploymentValues,
 };
 
 /** Max length of a Connect instance alias (also the strictest Connect name limit). */
 const CONNECT_MAX = 45;
 
 /**
+ * Max length of an S3 `BucketNamePrefix` when `BucketNamespace: ACCOUNT_REGIONAL`.
+ *
+ * S3 appends a `--<accountId>--<region>--rs3` suffix and enforces a 63-char
+ * total bucket-name limit, leaving 34 chars for the prefix (29-char suffix +
+ * hyphen separator). Longer prefixes fail at CreateBucket with:
+ *   "The full bucket name, including the account regional suffix, cannot exceed 63-characters."
+ */
+const S3_BUCKET_NAME_PREFIX_MAX = 34;
+
+/**
  * Return the validated deployment prefix.
  *
- * Throws if the template was deployed without being rendered (the placeholder
- * `{{...}}` survives) or if the prefix is empty — making the wrong thing fail
- * loudly instead of producing a garbage resource name.
+ * Throws when the template is deployed unrendered (prefix is empty in the
+ * checked-in `deployment-values.json`) — making the wrong thing fail loudly
+ * instead of producing a garbage resource name.
  */
 export function resolvePrefix(): string {
   const prefix = config.prefix;
-  if (!prefix || prefix.includes('{{')) {
+  if (!prefix) {
     throw new Error(
       'config.prefix is not set. It must be rendered from the project name via ' +
-      'scripts/render-templates.sh before deploying.',
+      '"csp render" before deploying.',
     );
   }
   return prefix;
@@ -194,6 +183,23 @@ export class ResourceNamer {
   /** Wisdom assistant, knowledge base, AI agents and prompts. */
   wisdom(baseName: string): string {
     return sanitizeForWisdom(`${this.prefix}-${baseName}`);
+  }
+
+  /**
+   * S3 `BucketNamePrefix` for `BucketNamespace: ACCOUNT_REGIONAL`.
+   *
+   * S3 appends a 29-char `--<accountId>--<region>--rs3` suffix to reach the
+   * 63-char total limit; the prefix itself must be ≤34 chars. When the
+   * combined `${prefix}-${baseName}` overshoots, the project prefix is
+   * truncated (never the baseName) so different resource kinds stay
+   * distinguishable in the same account.
+   */
+  bucketPrefix(baseName: string): string {
+    const combined = `${this.prefix}-${baseName}`.toLowerCase();
+    if (combined.length <= S3_BUCKET_NAME_PREFIX_MAX) return combined;
+    const room = Math.max(0, S3_BUCKET_NAME_PREFIX_MAX - baseName.length - 1);
+    return `${this.prefix.toLowerCase().slice(0, room)}-${baseName.toLowerCase()}`
+      .replace(/^-+|-+$/g, '');
   }
 
   /**

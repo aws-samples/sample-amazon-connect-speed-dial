@@ -231,7 +231,7 @@ function initializeConnectWidget() {
   if (!cfg || !cfg.widgets || cfg.widgets.length === 0) {
     console.error('No Connect widgets configured in config.js');
     var statusEl = document.getElementById('widget-status');
-    if (statusEl) statusEl.textContent = 'No widgets configured. Run scripts/setup-widget.sh to add one.';
+    if (statusEl) statusEl.textContent = 'No widgets configured. Run "csp setup-widget" to add one.';
     return;
   }
 

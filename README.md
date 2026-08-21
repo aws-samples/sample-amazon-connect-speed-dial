@@ -15,7 +15,7 @@ What the deployed contact center supports today:
 | Feature | Status | Notes |
 |---------|:------:|-------|
 | **Nova Sonic 2 voice agent** | ✅ | Q-in-Connect orchestration agent (Claude Haiku 4.5) + self-service answer generation (Nova Pro). |
-| **Knowledge base (RAG)** | ✅ | Optional — Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populated at setup from the bundled sample data or your own folder via `scripts/sync-kb.sh` (re-runnable anytime). |
+| **Knowledge base (RAG)** | ✅ | Optional — Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populated at setup from the bundled sample data or your own folder via `csp sync-kb` (re-runnable anytime). |
 | **Human transfer** | ✅ | Always on — routes the agent's Escalate outcome to a live-agent queue. |
 | **Tool calling (MCP)** | ✅ | Always on — ships a sample Lambda tool and wires the AgentCore MCP gateway's tools into the agent. |
 | **Call recording (consent gate)** | 📦 | Ships as a ready-made flow module (`consent-analytics-setup`) — a DTMF/view consent gate that records the call (Agent + Customer) and enables Contact Lens analytics on consent. It is deployed but **not wired into the default flow**; add an `InvokeFlowModule` step to the base flow to enable it (see [Capabilities](#capabilities)). |
@@ -26,7 +26,7 @@ What the deployed contact center supports today:
 | **Web-call frontend** | ✅ | Optional — browser-based calling (CloudFront + Cognito + API Gateway), with guided widget + sign-in setup. |
 | **UK phone number (DID)** | ✅ | Auto-claims a `+44` number and attaches it to the flow; other countries via the console. |
 | **Contact-events logging** | ✅ | Optional — EventBridge rule + Lambda logging contact lifecycle (DISCONNECTED) events to CloudWatch. |
-| **Language selection** | ✅ | English (`en_US`) or German (`de_DE`) — localizes the greeting, agent and self-service prompts, goodbye/error messages, the recording-consent prompt, the Lex bot locale, and the TTS voice/language. Any region × language combination is valid. |
+| **Language selection** | ✅ | English (`en_US`) or German (`de_DE`) — localizes the greeting, agent and self-service prompts, goodbye/error messages, the Lex bot locale, and the TTS voice/language. Any region × language combination is valid. |
 | **Region selection** | ✅ | `us-east-1` (N. Virginia, default) or `eu-central-1` (Frankfurt). Both run the full Connect + Q-in-Connect + Lex + Nova Sonic voice stack; the Bedrock inference-profile prefix (`us.*` / `eu.*`) is derived from the region. |
 | **Voice selection** | ✅ | Feminine (default) or masculine **Amazon Connect agentic voice**, resolved per language (English → KATIE/RONALD, German → VIKTORIA/SEBASTIAN). The flow's Set-voice block selects the provider via `TextToSpeechEngine: connect:agentic`; Polly voice names are not valid for it. |
 
@@ -42,7 +42,7 @@ Planned / not yet available:
 
 ## Usage
 
-The blueprints in this repository can be deployed either by a simple Python script or through the help of an agentic coding assistant.
+The blueprints in this repository can be deployed either by the `csp` command-line tool or through the help of an agentic coding assistant.
 The second option is easier for beginners because it gives you more direction through a conversational interface.
 
 ### Coding assistant supported deployment
@@ -56,7 +56,7 @@ Trigger the skill in Claude Code or Kiro by saying:
 
 The skill walks you through six phases interactively:
 
-1. **Gather inputs** — project name, company name, greeting, region (US / Frankfurt), language & voice (English/German, feminine/masculine), optional capabilities (Customer Profiles / analytics data lake / contact-events logging / knowledge base), and how you'll reach it (UK DID / web-call / manual)
+1. **Gather inputs** — project name, company name, region (US / Frankfurt), language & voice (English/German, feminine/masculine), optional capabilities (Customer Profiles / analytics data lake / contact-events logging / knowledge base), and how you'll reach it (UK DID / web-call / manual)
 2. **Preflight** — validates AWS credentials, CDK bootstrap, Bedrock model access
 3. **Render templates** — generates a CDK project from templates with your config
 4. **Deploy** — runs `cdk deploy --all` to create AWS resources (~20 minutes)
@@ -65,30 +65,44 @@ The skill walks you through six phases interactively:
 
 ### Deterministic deployment (no coding assistant)
 
-Prefer a plain script over an AI assistant? `scripts/deploy.py` (Python 3, stdlib-only) runs
-the identical flow deterministically: it interviews you (same questions, same defaults as the
-skill), writes the same order file, and drives the same scripts — so deployments are
-reproducible from either front door, and you can switch between them freely.
+Prefer a plain CLI over an AI assistant? The `csp` CLI (`cli/`, TypeScript — see
+[cli/README.md](cli/README.md)) is the deterministic deployment path: it interviews you
+(same questions, same defaults as the skill), writes the same order file, and runs the same
+steps — so deployments are reproducible from either front door, and you can switch between
+them freely.
 
 **Quickstart — deploy an AI contact center (copy-paste):**
 
 Prerequisites (one-time): AWS credentials with admin access configured in your shell,
-Node.js 18+, Python 3.9+, and [Bedrock model access](#prerequisites) enabled in the target
-region. The script handles CDK bootstrap itself.
+Node.js 20+, and [Bedrock model access](#prerequisites) enabled in the target region. The
+CLI handles CDK bootstrap itself.
 
 ```bash
 git clone https://github.com/aws-samples/sample-amazon-connect-speed-dial.git
 cd sample-amazon-connect-speed-dial
-scripts/deploy.py
+npm --prefix cli run setup                    # one-time: install the CLI's dependencies
+npm --silent --prefix cli run csp -- deploy
+```
+
+The CLI is an npm script in `cli/package.json`, so every invocation carries npm's own
+flags: `--silent` keeps npm's banner off stdout, `--prefix` locates the package from any
+directory, and `--` passes the remaining flags to the CLI. The rest of this README writes
+`csp …` for brevity — define it once in your shell and the examples work verbatim:
+
+```bash
+csp() { npm --silent --prefix cli run csp -- "$@"; }
 ```
 
 Answer the interview questions (or press Enter to accept the defaults) — about 20 minutes
 later you have a working AI contact center, verified by an automatic smoke test, plus a
-personalized checklist for anything that needs the console. For a zero-question deployment
-with all defaults (us-east-1, English, feminine voice, no add-ons):
+personalized checklist for anything that needs the console. Express mode skips the interview
+and takes all defaults (us-east-1, English, feminine voice, default add-ons — Customer
+Profiles stays on, everything else off); it still shows the order for one confirmation, so
+add `--yes` for a fully unattended run:
 
 ```bash
-scripts/deploy.py --express -p my-contact-center
+csp deploy --express -p my-contact-center          # one confirmation prompt
+csp deploy --express -p my-contact-center --yes    # no prompts at all (CI)
 ```
 
 Tip: answer the "How will you reach the agent?" question with **(a) UK phone number** for a
@@ -99,15 +113,15 @@ number automatically — the same default the skill's express path uses.
 All modes:
 
 ```bash
-scripts/deploy.py                                  # interactive interview
-scripts/deploy.py --express -p myproject           # all defaults
-scripts/deploy.py --order-file .connect-skill-order.myproject.json   # non-interactive / CI
-scripts/deploy.py --order-file ... --synth-only    # render + synth only, no AWS resources
+csp deploy                                  # interactive interview
+csp deploy --express -p myproject           # all defaults
+csp deploy --order-file .connect-skill-order.myproject.json   # non-interactive / CI
+csp deploy --order-file ... --synth-only    # render + synth only, no AWS resources
 ```
 
 Console-dependent steps (web-call widget, Identity Center app config) can't be scripted; the
 CLI finishes with a personalized checklist telling you exactly which file to create and which
-helper script to run for each.
+`csp` command to run for each.
 
 ## What it deploys
 
@@ -120,7 +134,7 @@ contact-events logging is enabled:
 | ConnectInstance | Connect instance, Customer Profiles, storage bucket |
 | Queues | Default queue and 24x7 hours of operation |
 | Wisdom | Q-in-Connect assistant, knowledge base (+ optional Bedrock KB with S3 Vectors), AI prompts (orchestration + answer gen), AI agents (orchestration + self-service), Lex V2 bot + alias, Connect integrations |
-| ContactFlow | Inbound contact flow with AI Agent compound block (CreateWisdomSession → UpdateContactData → ConnectParticipantWithLexBot), composed from the base flow + capability branches |
+| ContactFlow | Inbound contact flow with AI Agent compound block (CreateWisdomSession → UpdateContactData → ConnectParticipantWithLexBot), deployed as-is from `flows/basic-agent-flow.json` with placeholder substitution; plus the `get-customer-profile` and `consent-analytics-setup` flow modules and the prompt-texts data table |
 | AgentCoreGateway | Bedrock AgentCore MCP gateway + sample Lambda tool, registered as an MCP server integration on the instance |
 | FlowLambdas | Lambda functions for contact-flow tool calls |
 | ContactEvents _(conditional)_ | EventBridge logging for contact events (`contactEventsEnabled`) |
@@ -137,14 +151,14 @@ contact-events logging is enabled:
 
 **Ships as a module (not wired into the default flow):**
 
-- **Call recording + Contact Lens analytics** — the deploy always creates a `consent-analytics-setup` contact-flow module: a consent gate (DTMF on voice, a view on chat) that, on consent, records the call (Agent + Customer) and turns on Contact Lens analytics. The default flow does **not** invoke it, so recording is off out of the box. To enable it, add an `InvokeFlowModule` step referencing the `<project>-consent-analytics-setup` module near the start of the base flow (before the AI Agent block) in the Connect flow designer, then save & publish. The module's consent prompts are localized to the deployment language.
+- **Call recording + Contact Lens analytics** — the deploy always creates a `consent-analytics-setup` contact-flow module: a consent gate (DTMF on voice, a view on chat) that, on consent, records the call (Agent + Customer) and turns on Contact Lens analytics. The default flow does **not** invoke it, so recording is off out of the box. To enable it, add an `InvokeFlowModule` step referencing the `<project>-consent-analytics-setup` module near the start of the base flow (before the AI Agent block) in the Connect flow designer, then save & publish. **Note:** unlike the rest of the deployment, this module is *not* localized — `flows/consent-analytics-setup.json` contains no placeholders, so its German consent prompts, its placeholder company name and its `eu-central-1` chat-view ARN survive rendering verbatim. Edit that file (or point its prompts at the localized `recordingConsentVoice` / `recordingConsentChat` columns of the prompt-texts data table) before wiring it into the flow.
 
-**Optional** — set from your order file (defaults in parentheses); the interview / `deploy.py` asks about each one:
+**Optional** — set from your order file (defaults in parentheses); the interview (skill or `csp deploy`) asks about each one:
 
 | Order key | Default | What it does |
 |-----------|:-------:|--------------|
 | `customerProfilesEnabled` | `true` | Deploys the Customer Profiles domain, looks the caller up in the flow, and pre-injects their identity + most recent order into the Q Connect session. |
-| `knowledgeBaseEnabled` | `false` | Provisions a Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populate it at setup (sample data or your own folder) or later via `scripts/sync-kb.sh`. |
+| `knowledgeBaseEnabled` | `false` | Provisions a Bedrock Managed Knowledge Base (S3 Vectors) wired to the Q-in-Connect `Retrieve` tool; populate it at setup (sample data or your own folder) or later via `csp sync-kb`. |
 | `dataLakeEnabled` | `false` | Enables the Connect analytics data lake (contact records, flow events, agent stats). |
 | `contactEventsEnabled` | `false` | Adds an EventBridge rule + Lambda that log contact lifecycle (DISCONNECTED) events to CloudWatch. |
 | `frontendEnabled` | `false` | Deploys the browser-based web-call site (CloudFront + Cognito + API Gateway). |
@@ -180,11 +194,13 @@ reference:
 ## Prerequisites
 
 - AWS credentials with admin access to the target account
-- CDK v2 installed (`npm install -g aws-cdk@2.1128.0`, or via a pinned npx: `npx aws-cdk@2.1128.0`)
-- Node.js 18+
-- Bedrock model access in the target region (`amazon.nova-2-sonic-v1:0` in us-east-1; in
-  `amazon.nova-pro-v1:0` in both regions — the voice pipeline is Amazon Connect
-  agentic voice, which is Connect-hosted and needs no Bedrock model access)
+- CDK v2 installed (`npm install -g aws-cdk@2.1135.0`, or via a pinned npx: `npx aws-cdk@2.1135.0`
+  — the version pinned in `templates/cdk-app/package.json`)
+- Node.js 20+
+- Bedrock model access in the target region for **Claude Haiku 4.5** (the orchestration
+  agent's model) and **Nova Pro** (`amazon.nova-pro-v1:0`, answer generation + KB parsing).
+  The voice pipeline is Amazon Connect agentic voice, which is Connect-hosted and needs no
+  Bedrock model access.
 
 ## Runtime artifacts
 
@@ -226,12 +242,12 @@ npx cdk destroy --all
 stacks are then synthesized without retention: `npx cdk destroy --all` removes everything,
 including bucket contents. Recommended for test/demo/ephemeral deployments only.
 
-**Option B — clean up after a default deployment.** Run `scripts/teardown.sh`, which runs
+**Option B — clean up after a default deployment.** Run `csp teardown`, which runs
 `cdk destroy --all` and then sweeps the retained resources (Connect instance, versioned S3
 buckets, sap-orders table, KMS key) plus the two teardown quirks below:
 
 ```bash
-scripts/teardown.sh <projectName>   # e.g. scripts/teardown.sh acme-support
+csp teardown <projectName>   # e.g. csp teardown acme-support
 ```
 
 It resolves the rendered project at `csp-<projectName>`, reads the region from its values
@@ -256,16 +272,12 @@ tests/test-all-capabilities.sh  # render + cdk synth across region × language �
 ├── AGENTS.md                   # Canonical guidance for coding assistants
 ├── CLAUDE.md                   # Pointer to AGENTS.md
 ├── SKILL.md                    # Skill entry point (orchestration instructions)
+├── cli/                        # The csp deployment CLI (TypeScript) — the single
+│   ├── csp                     #   implementation of the whole pipeline: values, render,
+│   ├── src/                    #   preflight, synth, cdk-deploy, deploy, plus post-deploy
+│   └── README.md               #   (claim-did, sync-kb, smoke-test, teardown, …)
 ├── scripts/
-│   ├── build-values.sh         # Order JSON → validated values JSON
-│   ├── preflight.sh            # Environment validation
-│   ├── render-templates.sh     # Template rendering ({{key}} substitution)
-│   ├── init-prompts.sh         # Seed editable agent prompts into the working dir
-│   ├── validate-prompts.sh     # Check prompts keep required scaffolding
-│   ├── claim-uk-did.sh         # UK DID search/claim/associate
-│   ├── setup-widget.sh         # Wire up the web-call widget
-│   ├── setup-test-users.sh    # Create Cognito user + Customer Profile (or profile-only if no frontend)
-│   └── smoke-test.sh           # Post-deploy health checks
+│   └── release-to-github.sh    # Maintainer release helper (not part of the pipeline)
 ├── templates/cdk-app/          # CDK project template (source of truth)
 │   ├── bin/connect-blueprint.ts
 │   ├── lib/                    # Stack definitions ({{key}} placeholders)
@@ -274,14 +286,14 @@ tests/test-all-capabilities.sh  # render + cdk synth across region × language �
 ├── tests/
 │   ├── test-all-capabilities.sh
 │   ├── test-render-and-synth.sh
-│   ├── test-build-values.sh
-│   ├── test-validate-prompts.sh
+│   ├── test-deploy-cli.sh
+│   ├── ...                     # more per-feature tests, all driving the csp CLI
 │   └── fixtures/sample-values.json
 └── references/                 # Architecture docs and troubleshooting
 ```
 
 ## Contributors
-This project is being manintaind by below people. Feel free to reach out for ideas and feedback.
+This project is maintained by the people below. Feel free to reach out for ideas and feedback.
 
 Marco Strauss, strmarco@amazon.de
 Bent Krause, bentkr@amazon.de

@@ -198,11 +198,6 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
         props.connectInstanceId,
         props.connectInstanceArn,
       );
-
-      new cdk.CfnOutput(this, 'UpdateSessionContextFnArn', {
-        value: updateSessionContextFunction.functionArn,
-        description: 'ARN of the UpdateSessionContext Lambda',
-      });
     }
 
     // --- Describe Contact Lambda ---
@@ -269,7 +264,13 @@ export class ConnectFlowLambdasStack extends BlueprintStack {
     });
     associateDescribeContact.node.addDependency(this.describeContactFunction);
 
-    // --- Outputs ---
+    // --- Stack outputs ---
+    if (this.updateSessionContextFunction) {
+      new cdk.CfnOutput(this, 'UpdateSessionContextFnArn', {
+        value: this.updateSessionContextFunction.functionArn,
+        description: 'ARN of the UpdateSessionContext Lambda',
+      });
+    }
     new cdk.CfnOutput(this, 'DescribeContactFnArn', {
       value: this.describeContactFunction.functionArn,
       description: 'ARN of the DescribeContact Lambda',

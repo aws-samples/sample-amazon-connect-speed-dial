@@ -93,6 +93,9 @@ export class WisdomStack extends BlueprintStack {
     // assistant as an EXTERNAL_BEDROCK_KNOWLEDGE_BASE. This gives the Retrieve
     // tool access to indexed documents from S3.
     let bedrockKbAssociation: wisdom.CfnAssistantAssociation | undefined;
+    let kbBucket: s3.Bucket | undefined;
+    let bedrockKb: bedrock.CfnKnowledgeBase | undefined;
+    let bedrockDataSource: bedrock.CfnDataSource | undefined;
 
     if (config.knowledgeBaseEnabled) {
       // Dedicated S3 bucket for knowledge-base source documents. Kept separate
@@ -100,8 +103,8 @@ export class WisdomStack extends BlueprintStack {
       // the storage bucket's Glacier lifecycle (which would make them unreadable
       // for re-ingestion) and so encryption stays S3-managed (no customer KMS
       // key — Bedrock reads objects without needing kms:Decrypt grants).
-      const kbBucket = new s3.Bucket(this, 'KnowledgeBaseBucket', {
-        bucketNamePrefix: this.namer.connect('kb-docs'),
+      kbBucket = new s3.Bucket(this, 'KnowledgeBaseBucket', {
+        bucketNamePrefix: this.namer.bucketPrefix('kb-docs'),
         bucketNamespace: s3.BucketNamespace.ACCOUNT_REGIONAL,
         blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         encryption: s3.BucketEncryption.S3_MANAGED,
@@ -224,7 +227,7 @@ export class WisdomStack extends BlueprintStack {
       });
 
       // Bedrock Knowledge Base — uses the S3 Vectors store created above.
-      const bedrockKb = new bedrock.CfnKnowledgeBase(this, 'BedrockKnowledgeBase', {
+      bedrockKb = new bedrock.CfnKnowledgeBase(this, 'BedrockKnowledgeBase', {
         name: this.namer.wisdom('bedrock-kb'),
         description: 'Bedrock KB with S3 data source for Q in Connect RAG',
         roleArn: bedrockKbRole.roleArn,
@@ -251,7 +254,7 @@ export class WisdomStack extends BlueprintStack {
       const parsingModelArn = `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/{{kbParsingModelId}}`;
 
       // S3 data source pointing at the knowledge-base/ prefix in the storage bucket
-      const bedrockDataSource = new bedrock.CfnDataSource(this, 'BedrockDataSource', {
+      bedrockDataSource = new bedrock.CfnDataSource(this, 'BedrockDataSource', {
         knowledgeBaseId: bedrockKb.attrKnowledgeBaseId,
         name: this.namer.wisdom('kb-s3-source'),
         dataSourceConfiguration: {
@@ -328,11 +331,6 @@ export class WisdomStack extends BlueprintStack {
         },
       });
       bedrockKbAssociation.node.addDependency(bedrockKb);
-
-      new cdk.CfnOutput(this, 'KnowledgeBaseBucketName', { value: kbBucket.bucketName });
-      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseId', { value: bedrockKb.attrKnowledgeBaseId });
-      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseArn', { value: bedrockKb.attrKnowledgeBaseArn });
-      new cdk.CfnOutput(this, 'BedrockDataSourceId', { value: bedrockDataSource.attrDataSourceId });
     }
 
     // SELF_SERVICE AI Prompt — answer generation from KB documents (YAML format required by Q Connect)
@@ -439,6 +437,7 @@ export class WisdomStack extends BlueprintStack {
       },
     });
 
+    const guardrailHandlerDir = path.join(__dirname, '..', 'lambda', 'tools', 'wisdom-ai-guardrail');
     const guardrailFn = new lambda.Function(this, 'GuardrailFn', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
@@ -446,18 +445,25 @@ export class WisdomStack extends BlueprintStack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
       description: 'Creates/updates/deletes the Q in Connect AI guardrail via the qconnect API',
-      code: lambda.Code.fromInline(GUARDRAIL_HANDLER),
+      code: lambda.Code.fromAsset(guardrailHandlerDir),
     });
+
+    // Hash the handler source so any edit to its policy constants changes the
+    // custom-resource properties, triggering a CloudFormation Update
+    // (publishing a new guardrail version). Same behavior as the previous
+    // inline-string hash, just read from the file on disk.
+    const guardrailConfigHash = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(path.join(guardrailHandlerDir, 'index.py')))
+      .digest('hex')
+      .slice(0, 12);
 
     const guardrail = new cdk.CustomResource(this, 'AIGuardrail', {
       serviceToken: guardrailFn.functionArn,
       properties: {
         AssistantId: assistant.attrAssistantId,
         Name: guardrailName,
-        // Hash of the inline policy config — any edit to the GUARDRAIL_HANDLER's
-        // policy constants changes this hash, which triggers a CloudFormation
-        // Update on the custom resource (publishing a new guardrail version).
-        ConfigHash: crypto.createHash('sha256').update(GUARDRAIL_HANDLER).digest('hex').slice(0, 12),
+        ConfigHash: guardrailConfigHash,
       },
     });
     guardrail.node.addDependency(assistant);
@@ -899,174 +905,18 @@ export class WisdomStack extends BlueprintStack {
 
     this.botAliasArn = botAlias.attrArn;
 
+    // --- Stack outputs ---
+    // Core assistant/agent/bot outputs are always emitted; the KB block only
+    // exists when knowledgeBaseEnabled is true.
     new cdk.CfnOutput(this, 'AssistantId', { value: this.assistantId });
     new cdk.CfnOutput(this, 'OrchestrationAgentId', { value: this.orchestrationAgentId });
     new cdk.CfnOutput(this, 'OrchestrationAgentArn', { value: this.orchestrationAgentArn });
     new cdk.CfnOutput(this, 'BotAliasArn', { value: this.botAliasArn });
+    if (kbBucket && bedrockKb && bedrockDataSource) {
+      new cdk.CfnOutput(this, 'KnowledgeBaseBucketName', { value: kbBucket.bucketName });
+      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseId', { value: bedrockKb.attrKnowledgeBaseId });
+      new cdk.CfnOutput(this, 'BedrockKnowledgeBaseArn', { value: bedrockKb.attrKnowledgeBaseArn });
+      new cdk.CfnOutput(this, 'BedrockDataSourceId', { value: bedrockDataSource.attrDataSourceId });
+    }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Inline Python handler for the AI guardrail custom resource.
-//
-// The AWS::Wisdom::AIGuardrail CloudFormation resource is unreliable (opaque
-// GeneralServiceException, no visibilityStatus support), so this handler calls
-// the qconnect API directly with the exact camelCase policy config that the
-// CLI accepts. Create returns the guardrail id; Update updates in place; Delete
-// removes it. The guardrail is created with visibilityStatus PUBLISHED so the
-// AI agents can reference it immediately.
-// ---------------------------------------------------------------------------
-const GUARDRAIL_HANDLER = `
-import json, logging, urllib.request
-import boto3
-from botocore.exceptions import ClientError
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-BLOCKED_INPUT = 'I cannot process that request. Please rephrase your question about our services.'
-BLOCKED_OUTPUT = 'I cannot provide that information. Let me help you with something else.'
-
-CONTENT_POLICY = {
-    'filtersConfig': [
-        {'type': 'HATE', 'inputStrength': 'MEDIUM', 'outputStrength': 'HIGH'},
-        {'type': 'INSULTS', 'inputStrength': 'MEDIUM', 'outputStrength': 'HIGH'},
-        {'type': 'SEXUAL', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
-        {'type': 'VIOLENCE', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
-        {'type': 'MISCONDUCT', 'inputStrength': 'HIGH', 'outputStrength': 'HIGH'},
-        # PROMPT_ATTACK only supports input filtering — outputStrength MUST be NONE.
-        {'type': 'PROMPT_ATTACK', 'inputStrength': 'HIGH', 'outputStrength': 'NONE'},
-    ]
-}
-
-TOPIC_POLICY = {
-    'topicsConfig': [
-        {
-            'name': 'off-topic',
-            'type': 'DENY',
-            'definition': 'Requests unrelated to company services, products, orders, accounts, or support. Includes general knowledge, personal advice, coding help, or topics outside customer service.',
-            'examples': [
-                'What is the meaning of life?',
-                'Write me a poem',
-                'Help me with my homework',
-                'What is the weather today?',
-            ],
-        }
-    ]
-}
-
-SENSITIVE_POLICY = {
-    'piiEntitiesConfig': [
-        {'type': 'CREDIT_DEBIT_CARD_NUMBER', 'action': 'ANONYMIZE'},
-        {'type': 'US_SOCIAL_SECURITY_NUMBER', 'action': 'ANONYMIZE'},
-        {'type': 'US_BANK_ACCOUNT_NUMBER', 'action': 'ANONYMIZE'},
-        {'type': 'CREDIT_DEBIT_CARD_CVV', 'action': 'BLOCK'},
-        {'type': 'PIN', 'action': 'BLOCK'},
-        {'type': 'PASSWORD', 'action': 'BLOCK'},
-    ]
-}
-
-WORD_POLICY = {'managedWordListsConfig': [{'type': 'PROFANITY'}]}
-
-
-def create_guardrail(client, assistant_id, name):
-    resp = client.create_ai_guardrail(
-        assistantId=assistant_id,
-        name=name,
-        visibilityStatus='PUBLISHED',
-        blockedInputMessaging=BLOCKED_INPUT,
-        blockedOutputsMessaging=BLOCKED_OUTPUT,
-        description='Service agent guardrail - blocks harmful content, PII, off-topic, and prompt attacks',
-        contentPolicyConfig=CONTENT_POLICY,
-        topicPolicyConfig=TOPIC_POLICY,
-        sensitiveInformationPolicyConfig=SENSITIVE_POLICY,
-        wordPolicyConfig=WORD_POLICY,
-    )
-    return resp['aiGuardrail']['aiGuardrailId']
-
-
-def update_guardrail(client, assistant_id, guardrail_id):
-    client.update_ai_guardrail(
-        assistantId=assistant_id,
-        aiGuardrailId=guardrail_id,
-        visibilityStatus='PUBLISHED',
-        blockedInputMessaging=BLOCKED_INPUT,
-        blockedOutputsMessaging=BLOCKED_OUTPUT,
-        description='Service agent guardrail - blocks harmful content, PII, off-topic, and prompt attacks',
-        contentPolicyConfig=CONTENT_POLICY,
-        topicPolicyConfig=TOPIC_POLICY,
-        sensitiveInformationPolicyConfig=SENSITIVE_POLICY,
-        wordPolicyConfig=WORD_POLICY,
-    )
-
-
-def publish_version(client, assistant_id, guardrail_id):
-    # AI agents must reference a guardrail by a version qualifier (id:version),
-    # not the bare id. Publish a version and return the qualified id.
-    resp = client.create_ai_guardrail_version(
-        assistantId=assistant_id,
-        aiGuardrailId=guardrail_id,
-    )
-    version = resp['versionNumber']
-    return f"{guardrail_id}:{int(version)}"
-
-
-def handler(event, context):
-    logger.info(f"RequestType: {event.get('RequestType')}")
-    rt = event.get('RequestType')
-    props = event.get('ResourceProperties', {})
-    assistant_id = props['AssistantId']
-    name = props['Name']
-    client = boto3.client('qconnect')
-
-    try:
-        if rt == 'Create':
-            gid = create_guardrail(client, assistant_id, name)
-            qualified = publish_version(client, assistant_id, gid)
-            send(event, context, 'SUCCESS',
-                 {'AIGuardrailId': gid, 'QualifiedId': qualified}, physical_id=gid)
-        elif rt == 'Update':
-            gid = event.get('PhysicalResourceId', '')
-            try:
-                update_guardrail(client, assistant_id, gid)
-            except ClientError as e:
-                # If the existing guardrail can't be updated, create a fresh one.
-                logger.warning(f"Update failed ({e}); creating a new guardrail")
-                gid = create_guardrail(client, assistant_id, name)
-            # Publish a new version so the update is reflected in a qualifier.
-            qualified = publish_version(client, assistant_id, gid)
-            send(event, context, 'SUCCESS',
-                 {'AIGuardrailId': gid, 'QualifiedId': qualified}, physical_id=gid)
-        elif rt == 'Delete':
-            gid = event.get('PhysicalResourceId', '')
-            if gid and gid.count('-') >= 4:  # looks like a real id, not a failed-create token
-                try:
-                    client.delete_ai_guardrail(assistantId=assistant_id, aiGuardrailId=gid)
-                except ClientError as e:
-                    logger.warning(f"Delete tolerated error: {e}")
-            send(event, context, 'SUCCESS', {}, physical_id=gid or 'none')
-        else:
-            send(event, context, 'FAILED', {}, reason=f"Unknown RequestType {rt}")
-    except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        send(event, context, 'FAILED', {}, reason=str(e), physical_id=event.get('PhysicalResourceId', 'none'))
-
-
-def send(event, context, status, data, reason=None, physical_id=None):
-    body = {
-        'Status': status,
-        'Reason': reason or f"See CloudWatch: {context.log_stream_name}",
-        'PhysicalResourceId': physical_id or context.log_stream_name,
-        'StackId': event['StackId'],
-        'RequestId': event['RequestId'],
-        'LogicalResourceId': event['LogicalResourceId'],
-        'Data': data,
-    }
-    req = urllib.request.Request(
-        event['ResponseURL'],
-        data=json.dumps(body).encode(),
-        headers={'Content-Type': ''},
-        method='PUT',
-    )
-    urllib.request.urlopen(req)
-`;

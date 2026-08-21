@@ -44,7 +44,7 @@ for e in t['Errors']:
 
 # 1. EVERY branch out of the profile lookup must reach the AI agent, never a
 #    disconnect. 'success', 'unknown', 'multiple', the default, and the error
-#    transitions (the last of which is what a non-imported placeholder module hits).
+#    transitions (the last of which is what a broken/misdeployed module hits).
 for name, target in branches.items():
     path = walk(INVOKE, target)
     if 'ConnectParticipantWithLexBot' not in path:

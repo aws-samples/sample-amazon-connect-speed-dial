@@ -15,6 +15,7 @@ set -euo pipefail
 #   2. the rendered seed yields the deployed greeting for gender+language
 #   3. a de-DE deployment resolves the German text, not the English one
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CSP=(npm --silent --prefix "$ROOT/cli" run csp --)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -25,18 +26,18 @@ resolve() { # <seed> <gender> <lang>
     '(.[$g] // .feminine) | map(select(.language == $l)) | .[0].aiAssistantIntro // empty' "$1"
 }
 
-# --- 1. build-values.sh must not emit a `greeting` field --------------------
+# --- 1. csp values must not emit a `greeting` field --------------------------
 cat > "$TMP/order.json" <<'ORDER'
 { "projectName": "greet", "companyName": "E2E Test Co", "region": "us-east-1",
   "language": "en", "voiceGender": "feminine", "knowledgeBaseEnabled": true }
 ORDER
-"$ROOT/scripts/build-values.sh" "$TMP/order.json" "$TMP/values.json" >/dev/null
+"${CSP[@]}" values "$TMP/order.json" "$TMP/values.json" >/dev/null
 [[ "$(jq -r 'has("greeting")' "$TMP/values.json")" == "false" ]] \
   || fail "values file carries a 'greeting' field again — update the harness or drop it"
 
 # --- 2. en-US render resolves the English greeting with companyName applied --
 render() { # <values> <dest>
-  "$ROOT/scripts/render-templates.sh" "$1" "$ROOT/templates/cdk-app" "$2" >/dev/null 2>&1
+  "${CSP[@]}" render "$1" "$ROOT/templates/cdk-app" "$2" >/dev/null 2>&1
 }
 render "$TMP/values.json" "$TMP/en"
 SEED="$TMP/en/flows/prompt-texts-seed.json"
@@ -59,7 +60,7 @@ cat > "$TMP/order-de.json" <<'ORDER'
 { "projectName": "greetde", "companyName": "E2E Test Co", "region": "eu-central-1",
   "language": "de", "voiceGender": "masculine", "knowledgeBaseEnabled": true }
 ORDER
-"$ROOT/scripts/build-values.sh" "$TMP/order-de.json" "$TMP/values-de.json" >/dev/null
+"${CSP[@]}" values "$TMP/order-de.json" "$TMP/values-de.json" >/dev/null
 render "$TMP/values-de.json" "$TMP/de"
 DE_LANG="$(jq -r '.ttsLanguageCode' "$TMP/values-de.json")"
 DE_GENDER="$(jq -r '.voiceGender' "$TMP/values-de.json")"
