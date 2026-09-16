@@ -17,29 +17,11 @@ TMP_VALUES="$(mktemp)"
 trap 'rm -f "$TMP_VALUES"' EXIT
 jq --argjson p "$PROFILES" '.customerProfilesEnabled=$p' "$VALUES" > "$TMP_VALUES"
 
-"$ROOT/scripts/render-templates.sh" "$TMP_VALUES" "$SRC" "$DEST"
+npm --silent --prefix "$ROOT/cli" run csp -- render "$TMP_VALUES" "$SRC" "$DEST"
 
-# Container runtime for CDK asset bundling (the boto3 Lambda layer is built in a
-# container). Without one, `cdk synth` dies with a bare "spawnSync docker ENOENT"
-# inside a LayerVersion stack trace, which reads like a blueprint defect but is
-# purely a missing local dependency. Mirror deploy.py's resolution order —
-# explicit CDK_DOCKER, then docker, then Finch — and say so plainly if neither
-# is available, instead of failing 200 lines later for the wrong reason.
-if [[ -z "${CDK_DOCKER:-}" ]]; then
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    : # docker daemon is up; CDK's default works
-  elif command -v finch >/dev/null 2>&1; then
-    if [[ "$(finch vm status 2>/dev/null)" != "Running" ]]; then
-      echo "SKIP: Finch VM is not running — start it with 'finch vm start' (or 'finch vm init'), or start Docker Desktop" >&2
-      exit 0
-    fi
-    export CDK_DOCKER="$(command -v finch)"
-    echo "using Finch as the container runtime (CDK_DOCKER=$CDK_DOCKER)"
-  else
-    echo "SKIP: no container runtime for CDK asset bundling — start Docker Desktop or install Finch (brew install finch)" >&2
-    exit 0
-  fi
-fi
+# shellcheck source=tests/lib/container-runtime.sh
+source "$ROOT/tests/lib/container-runtime.sh"
+require_container_runtime
 
 cd "$DEST"
 npm install --silent 2>&1 | tail -5
@@ -124,11 +106,31 @@ echo "$LEX_LOCALES" | grep -q "en_US" || { echo "FAIL: default Lex locale en_US 
 # Human transfer is always on → the flow contains a TransferContactToQueue action.
 echo "$FLOW_CONTENT" | grep -q "TransferContactToQueue" || { echo "FAIL: no TransferContactToQueue in flow (transfer is always on)" >&2; exit 1; }
 
-# Call recording is always on → the consent-analytics module carries the DTMF
-# consent gate (GetParticipantInput) and the recording toggle actions.
+# The consent-analytics module ships deployed (not yet invoked by the flow) and
+# carries the DTMF consent gate (GetParticipantInput) and the recording toggles.
 CONSENT_MODULE=$(jq -r '[.Resources | to_entries[] | select(.value.Type=="AWS::Connect::ContactFlowModule") | .value.Properties.Content | tostring] | join("\n")' "$TEMPLATE_PREFIX-ContactFlow.template.json")
-echo "$CONSENT_MODULE" | grep -q "GetParticipantInput" || { echo "FAIL: consent module has no GetParticipantInput gate (recording is always on)" >&2; exit 1; }
-echo "$CONSENT_MODULE" | grep -q "UpdateContactRecordingAndAnalyticsBehavior" || { echo "FAIL: consent module has no recording toggle (recording is always on)" >&2; exit 1; }
+echo "$CONSENT_MODULE" | grep -q "GetParticipantInput" || { echo "FAIL: consent module has no GetParticipantInput gate" >&2; exit 1; }
+echo "$CONSENT_MODULE" | grep -q "UpdateContactRecordingAndAnalyticsBehavior" || { echo "FAIL: consent module has no recording toggle" >&2; exit 1; }
+
+# The get-customer-profile module deploys functionally via CFN: its Content
+# carries the profile-lookup actions (no placeholder), and the resource's
+# top-level Settings property carries the interface document — omit that and
+# the API rejects EndFlowModuleExecution Result/ResultData; a wrong-shaped one
+# is silently accepted and the Invoke block exposes no parameters.
+python3 - "$TEMPLATE_PREFIX-ContactFlow.template.json" <<'PY' || { echo "FAIL: get-customer-profile module not deployed functionally via CFN" >&2; exit 1; }
+import json,sys
+R=json.load(open(sys.argv[1]))['Resources']
+mods=[v['Properties'] for v in R.values() if v['Type']=='AWS::Connect::ContactFlowModule']
+prof=next(p for p in mods if 'GetCustomerProfile' in p['Content'])
+content=json.loads(prof['Content'])
+assert len(content['Actions'])>1, 'placeholder-sized content'
+assert 'Settings' in content, 'Content missing the mandatory nested Settings block'
+settings=json.loads(prof['Settings'])
+assert set(settings)>= {'input','resultData','transitions'}, 'Settings missing interface keys: '+str(set(settings))
+assert {r['name'] for r in settings['transitions']['results']}=={'success','unknown','multiple'}, 'unexpected branch names'
+ends={a['Parameters'].get('Result') for a in content['Actions'] if a['Type']=='EndFlowModuleExecution'}
+assert ends=={'success','unknown','multiple'}, 'EndFlowModuleExecution results %s do not match declared transitions'%ends
+PY
 
 # Agent prompts: rendered as files with {{companyName}} substituted and the
 # Q Connect runtime variables left intact, and the text reaches the synthesized

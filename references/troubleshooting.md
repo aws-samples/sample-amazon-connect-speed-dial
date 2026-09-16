@@ -32,13 +32,14 @@ This document covers common failure modes and solutions for the Amazon Connect N
 
 **Symptom:**
 ```
-✗ CDK not installed. Run 'npm install -g aws-cdk@2.1128.0' or 'npm install'.
+✗ CDK not installed. Run 'npm install -g aws-cdk@2.1135.0' or 'npm install'.
 ```
 
 **Solution:**
-1. Install CDK globally: `npm install -g aws-cdk@2.1128.0`
-2. Or use a pinned npx (no install needed): `npx aws-cdk@2.1128.0 --version`
-3. Verify with: `cdk --version` (should show 2.130.0 or higher)
+1. Install CDK globally: `npm install -g aws-cdk@2.1135.0` (the version pinned in
+   `templates/cdk-app/package.json`)
+2. Or use a pinned npx (no install needed): `npx aws-cdk@2.1135.0 --version`
+3. Verify with: `cdk --version` (should show 2.1135.0 or higher)
 
 ---
 
@@ -69,19 +70,31 @@ Insufficient IAM permissions to create the CDKToolkit stack.
 
 **Symptom:**
 ```
-⚠ Bedrock model amazon.nova-sonic-v2:0 not accessible
+✗ Bedrock model amazon.nova-pro-v1:0 not accessible
 ```
 
 **Cause:**
 Model access not granted in Bedrock console.
 
+**The blueprint needs TWO models enabled** in the deploy region:
+- **Claude Haiku 4.5** — the orchestration agent's model
+- **Nova Pro** (`amazon.nova-pro-v1:0`) — answer generation + KB parsing
+
+The caller-facing voice is **Amazon Connect agentic voice** — Connect-hosted, in both
+regions — NOT a Bedrock model the account must enable. That's why preflight probes
+Nova Pro rather than a voice model.
+
+`csp preflight` probes only **Nova Pro**, so a missing Haiku enablement passes
+preflight and surfaces later, at deploy time (QConnect/agent validation errors).
+If a deploy fails on model access, check both in the console.
+
 **Solution:**
-1. Visit: https://console.aws.amazon.com/bedrock/home?region=us-east-1#/modelaccess
-2. Find "Amazon Nova Sonic v2" in the model list
+1. Visit: https://console.aws.amazon.com/bedrock/home?region=<region>#/modelaccess
+2. Find each of the two models above in the model list
 3. Click "Edit" and enable access
 4. Click "Save changes"
 5. Wait 1-2 minutes for propagation
-6. Re-run preflight.sh
+6. Re-run `csp preflight`
 
 **Note:** Model access is account-wide and only needs to be granted once per account.
 
@@ -89,11 +102,11 @@ Model access not granted in Bedrock console.
 
 ## CDK Deployment Failures
 
-### InvalidContactFlowException on ContactFlowStack
+### InvalidContactFlowException on the ContactFlow stack
 
 **Symptom:**
 ```
-ContactFlowStack | CREATE_FAILED | AWS::Connect::ContactFlow
+<projectName>-ContactFlow | CREATE_FAILED | AWS::Connect::ContactFlow
 InvalidContactFlowException: Invalid contact flow content
 ```
 
@@ -106,12 +119,12 @@ The contact flow JSON must embed the exact AI Agent block structure that Connect
 **Solution:**
 
 1. **Verify Stack Dependency**
-   The ContactFlowStack depends on QConnectAssistantStack. If the assistant stack fails, the flow stack will also fail.
+   The `<projectName>-ContactFlow` stack depends on `<projectName>-Wisdom`. If the Wisdom stack fails, the flow stack will also fail.
 
    Check:
    ```bash
    aws cloudformation describe-stacks \
-     --stack-name QConnectAssistantStack \
+     --stack-name <projectName>-Wisdom \
      --region us-east-1 \
      --query 'Stacks[0].StackStatus' \
      --output text
@@ -125,24 +138,24 @@ The contact flow JSON must embed the exact AI Agent block structure that Connect
    a. Create a test flow in the Connect console with an AI Agent block
    b. Export the flow JSON from the console
    c. Copy the `parameters` section of the AI Agent block
-   d. Update `templates/cdk-app/flows/nova-sonic-qa.json` (and other flavors) with the new structure
+   d. Update `templates/cdk-app/flows/basic-agent-flow.json` with the new structure
 
 3. **Validate Flow JSON**
    ```bash
-   jq . templates/cdk-app/flows/nova-sonic-qa.json
+   jq . templates/cdk-app/flows/basic-agent-flow.json
    ```
    If this fails, the JSON is malformed.
 
 4. **Check AI Agent ARN Format**
    The flow references the assistant ARN. Ensure the CDK stack uses:
    ```typescript
-   assistantArn: qConnectStack.assistant.attrAssistantArn
+   assistantArn: wisdom.assistantArn
    ```
 
 5. **Retry Deployment**
    After fixing, redeploy:
    ```bash
-   npx cdk deploy ContactFlowStack --require-approval never
+   npx cdk deploy <projectName>-ContactFlow --require-approval never
    ```
 
 ---
@@ -157,7 +170,7 @@ CloudFormation stack is stuck in CREATE_IN_PROGRESS.
 
 **Solution:**
 1. Open the CloudFormation console: https://console.aws.amazon.com/cloudformation/home?region=us-east-1
-2. Find the stuck stack (e.g., ConnectInstanceStack)
+2. Find the stuck stack (e.g., `<projectName>-ConnectInstance`)
 3. Check the "Events" tab for errors
 4. If truly stuck (no events for >5 minutes), cancel the stack:
    ```bash
@@ -224,7 +237,7 @@ Deploy failed before outputs could be written.
 3. Manually export outputs:
    ```bash
    aws cloudformation describe-stacks \
-     --stack-name ConnectInstanceStack \
+     --stack-name <projectName>-ConnectInstance \
      --region us-east-1 \
      --query 'Stacks[0].Outputs' \
      --output json > cdk-outputs.json
@@ -246,14 +259,15 @@ Connect has no UK DIDs in inventory for the current search.
 
 **Solution:**
 
-1. **Retry the claim script**
+1. **Retry the claim**
    DID inventory changes frequently. Wait 30 seconds and retry:
    ```bash
-   scripts/claim-uk-did.sh <instance-id> <flow-id>
+   csp claim-did <instance-id> <flow-id> <region>
    ```
 
 2. **Widen the search**
-   Edit `scripts/claim-uk-did.sh` and increase `--max-results`:
+   `csp claim-did` searches with `MaxResults: 5` (`cli/src/commands/claimDid.ts`);
+   to widen, search manually and claim in the console, or run the equivalent CLI call:
    ```bash
    aws connect search-available-phone-numbers \
      --target-arn "$INSTANCE_ARN" \
@@ -281,7 +295,7 @@ Connect has no UK DIDs in inventory for the current search.
    - Go to: https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers
    - Click "Claim a number"
    - Pick country/type and complete any address fields the console requests
-   - Set the contact flow to `<projectName>-nova-sonic`
+   - Set the contact flow to `<projectName>-basic-agent-flow`
 
 ---
 
@@ -296,9 +310,9 @@ An error occurred (ConflictException) when calling the ClaimPhoneNumber operatio
 The number was claimed by another AWS account between the search and claim operations.
 
 **Solution:**
-Retry the claim script immediately. The script will search for a different number:
+Retry the claim immediately. The command will search for a different number:
 ```bash
-scripts/claim-uk-did.sh <instance-id> <flow-id>
+csp claim-did <instance-id> <flow-id> <region>
 ```
 
 ---
@@ -330,7 +344,7 @@ The contact flow ID is invalid or the instance ID is wrong.
 
 3. Retry with correct IDs:
    ```bash
-   scripts/claim-uk-did.sh <correct-instance-id> <correct-flow-id>
+   csp claim-did <correct-instance-id> <correct-flow-id> <region>
    ```
 
 ---
@@ -350,7 +364,7 @@ Connect instance is still being created.
 **Solution:**
 Wait 1-2 minutes and re-run smoke test:
 ```bash
-scripts/smoke-test.sh <instance-id> <flow-id> <assistant-id> <ai-agent-id>
+csp smoke-test <project-dir>
 ```
 
 Instance creation typically takes 3-5 minutes.
@@ -370,12 +384,12 @@ Contact flow is in draft mode and hasn't been published.
 **Solution:**
 1. Verify the CDK stack publishes the flow:
    ```typescript
-   new CfnContactFlow(this, 'NovaFlow', {
+   new connect.CfnContactFlow(this, 'ContactFlow', {
      instanceArn: props.instanceArn,
+     name: this.namer.connect('basic-agent-flow'),
      type: 'CONTACT_FLOW',
-     name: 'Nova Sonic Q&A',
-     content: JSON.stringify(flowContent),
-     state: 'ACTIVE'  // ← must be ACTIVE
+     content,
+     // state defaults to ACTIVE — do not set state: 'ARCHIVED'
    });
    ```
 
@@ -407,21 +421,21 @@ Wait 30-60 seconds and re-run smoke test. AI Agent creation is fast but not inst
 
 **Symptom:**
 ```
-⚠ No UK DID associated with flow (skip claim-uk-did.sh? — claim manually to receive calls)
+⚠ No UK DID associated with flow (skipped csp claim-did? — claim manually to receive calls)
 ```
 
 **Cause:**
 Phase 5 was skipped (or hasn't been run yet), and no number has been attached to the contact flow.
 
-**Solution (option A — claim a UK DID via the script):**
+**Solution (option A — claim a UK DID via the CLI):**
 ```bash
-scripts/claim-uk-did.sh <instance-id> <flow-id>
+csp claim-did <instance-id> <flow-id> <region>
 ```
 
 **Solution (option B — claim any country/type in the console):**
 1. Open: `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers`
 2. Click **Claim a number**, choose country/type, and complete any regulatory address bundle the console requests
-3. Set the **contact flow** on the claimed number to `<projectName>-nova-sonic`
+3. Set the **contact flow** on the claimed number to `<projectName>-basic-agent-flow`
 
 The smoke test prints a warning here rather than failing, so this is non-blocking — you can deploy first and decide on a number later.
 
@@ -457,7 +471,7 @@ Or in the console: https://console.aws.amazon.com/connect/v2/app/instances/<inst
 To see the CloudFormation template before deploying:
 
 ```bash
-npx cdk synth ConnectInstanceStack
+npx cdk synth <projectName>-ConnectInstance
 ```
 
 This prints the full CloudFormation JSON. Useful for verifying resource properties.
@@ -478,15 +492,19 @@ aws cloudformation describe-stack-events \
 
 ---
 
-### Re-Running Idempotent Scripts
+### Re-Running Idempotent Commands
 
-All scripts are idempotent:
-- **preflight.sh**: Safe to re-run anytime
-- **render-templates.sh**: Overwrites destination directory
-- **claim-uk-did.sh**: Detects existing associations and skips claiming. Takes `<instance-id> <flow-id>` (no Ofcom address — the API doesn't require one for UK DIDs).
-- **smoke-test.sh**: Read-only, always safe
+All `csp` commands are idempotent:
+- **csp preflight**: Safe to re-run anytime
+- **csp render**: Overwrites destination directory
+- **csp claim-did**: Detects existing associations and skips claiming. Takes
+  `<instance-id> <flow-id> [region]` (no Ofcom address — the API doesn't require one for
+  UK DIDs). Unlike the other post-deploy commands it does **not** read the region from the
+  values file — it defaults to `us-east-1`, so pass the region explicitly on an
+  `eu-central-1` deployment or it targets a nonexistent Virginia instance.
+- **csp smoke-test**: Read-only, always safe. Takes the project dir — the resource ids are read from its `cdk-outputs.json`.
 
-If a script fails, fix the issue and re-run. No need to start from scratch.
+If a command fails, fix the issue and re-run. No need to start from scratch.
 
 ---
 

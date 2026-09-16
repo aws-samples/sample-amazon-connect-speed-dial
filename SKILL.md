@@ -1,24 +1,24 @@
 ---
 name: connect-bootstrap
-description: Use when the user wants to set up an Amazon Connect contact center with a Nova Sonic 2 AI voice agent. Scaffolds a CDK project with built-in human transfer, tool calling, and call recording, deploys, claims a UK DID, and runs smoke test. Triggers on "set up Amazon Connect", "create a Connect instance", "deploy a Nova Sonic agent", "Connect AI agent blueprint".
+description: Use when the user wants to set up an Amazon Connect contact center with a Nova Sonic 2 AI voice agent. Scaffolds a CDK project with built-in human transfer and tool calling (plus a ready-made recording-consent module), deploys, claims a UK DID, and runs smoke test. Triggers on "set up Amazon Connect", "create a Connect instance", "deploy a Nova Sonic agent", "Connect AI agent blueprint".
 ---
 
 # Amazon Connect Nova Sonic Blueprint
 
-This skill deploys a complete Amazon Connect contact center with a Nova Sonic 2 AI voice agent and runs smoke tests. The deployment includes a Connect instance, Q in Connect AI agent with two Bedrock agents (orchestrator + self-service), and a contact flow composed from your selected capabilities.
+This skill deploys a complete Amazon Connect contact center with a Nova Sonic 2 AI voice agent and runs smoke tests. The deployment includes a Connect instance, Q in Connect AI agent with two Bedrock agents (orchestrator + self-service), and a contact flow with built-in human transfer and tool calling. Call recording ships as a deployed-but-unwired consent module (see the Sides course below).
 
-By default the skill claims a **UK DID** (a `+44` direct-inward-dial number). UK DIDs are chosen because they have the lightest regulatory footprint of the supported regions — no business-address bundle is required at claim time, so the flow can complete unattended. If you want a number in a different country, or you'd prefer to pick the specific number yourself, skip the claim phase and claim the number manually in the Connect admin console, then associate it with the deployed contact flow.
+By default the skill claims a **UK DID** (a `+44` direct-inward-dial number) — UK DIDs have the lightest regulatory footprint of the supported regions (no business-address bundle at claim time), so the flow can complete unattended. For a number in another country, or to pick a specific number, skip the claim phase and claim manually in the Connect console (see "Manual phone number" in Phase 5).
 
 ## Overview
 
-You will orchestrate six phases:
+The skill has two layers:
 
-1. **Gather inputs** - collect configuration from the user via a menu-driven interface
-2. **Preflight** - validate AWS credentials, CDK bootstrap, Bedrock access
-3. **Render templates** - generate CDK app from templates
-4. **Deploy** - run `cdk deploy --all` to create all AWS resources
-5. **Claim UK DID** (optional) - search and associate a UK phone number with the contact flow; skip if you want to attach a number yourself in the console
-6. **Smoke test** - verify all resources are healthy and report final phone number
+1. **The template** — `templates/cdk-app/` is the CDK app that gets rendered and deployed. Never edit rendered `csp-*/` project dirs; edit the template. Full guidance: `AGENTS.md` (the golden rule, placeholder conventions, capabilities, stacks).
+2. **The `csp` CLI** — the `cli/` package is the single implementation of the deployment pipeline (pre- and post-deploy, all native AWS SDK). See `cli/README.md`. There is no launcher script — `csp` is an npm script — so in every command below, `csp` means `npm --silent --prefix <skill-dir>/cli run csp --`; always resolve paths from `<skill-dir>`, never hard-code them. Keep `--silent` (it keeps npm's banner off stdout) and the trailing `--` (it hands the remaining flags to the CLI rather than to npm). **Run `npm --prefix <skill-dir>/cli run setup` once before the first `csp` command** — it installs the CLI's dependencies, and nothing else does it for you.
+
+**Your job as the assistant:** run the Phase 1 interview conversationally (the menu below), write the order file yourself, then drive the remaining phases by running `csp` commands — **1 Gather inputs** (interview → `.connect-skill-order.<projectName>.json`) · **2 Preflight** (`csp preflight`) · **3 Render** (`csp values` + `csp render`) · **4 Deploy** (`csp synth` + `csp cdk-deploy`) · **5 Claim UK DID**, optional (`csp claim-did`) · **6 Smoke test** (`csp smoke-test`).
+
+The pipeline step commands (`values`, `render`, `preflight`, `synth`, `cdk-deploy`, `validate-prompts`) accept `--json` to emit a machine-readable result object as the last stdout line — prefer it when you need to parse outcomes. The post-deploy commands (`claim-did`, `sync-kb`, etc.) do not take the flag. **Hands-off alternative:** once the order file exists, `csp deploy --order-file <file> --yes` runs phases 2–6 (plus DID claim and KB sync per the order's prefs) in one shot and prints next-steps guidance. Use it when the user wants no per-phase interaction; the step-by-step path gives better conversational checkpoints.
 
 ## Phase 1: Gather Inputs
 
@@ -36,9 +36,7 @@ If "The usual" is chosen, skip to the Starter (project name only) and AWS accoun
 
 ### Starter — Identity [Ready]
 
-These items are **always asked** (even in express mode, project name is required):
-
-1. **Project name**
+1. **Project name** (always asked, even in express mode)
    - Ask: "What would you like to name this project?"
    - Default: `connect-nova-sonic-blueprint`
    - Validate: lowercase alphanumeric + hyphens only, max 32 chars
@@ -48,31 +46,21 @@ These items are **always asked** (even in express mode, project name is required
 In "Walk me through it" mode, also ask:
 
 2. **Company name**
-   - Ask: "Enter your company name (used in the AI agent prompt)."
+   - Ask: "Enter your company name (used in the AI agent prompt and the localized call prompts)."
    - Default: `My Company`
+   - Must not contain backticks, `${`, or backslashes (`csp values` rejects them)
    - Store in order object as: `companyName`
-
-3. **Greeting text**
-   - Ask: "Enter the greeting message the AI will speak."
-   - Default: **language-dependent** — offer the default in the language the user is choosing, not always English:
-     - English: `Hello, welcome to <companyName>. How can I assist you today?`
-     - German: `Hallo, willkommen bei <companyName>. Wie kann ich Ihnen helfen?`
-     (substitute the actual company name)
-   - **Ask the Language question (Locale & region course, below) BEFORE offering this default**, so a German instance is never seeded an English greeting. If for flow reasons you must ask greeting first, only store `greeting` in the order object when the user typed a *custom* value — if they accept the default, leave `greeting` unset so `build-values.sh` localizes it to the chosen language.
-   - Store in order object as: `greeting` (custom values only; a kept default is left unset)
-   - Safety net: `build-values.sh` treats a greeting equal to either language's default template as "default kept" and emits the default for the selected language, so an accepted default always matches the instance language.
+   - What the agent *says* (greeting, persona) is governed by the agent prompts (next course) and the localized prompt-text seeds — there is no separate greeting question.
 
 ### Locale & region — Where & how it speaks [Ready]
 
-Only offer this course in "Walk me through it" mode (express keeps the defaults:
-US/Virginia, English, feminine voice). Ask one question at a time via AskUserQuestion.
+Only offer this course in "Walk me through it" mode (express keeps the defaults: US/Virginia, English, feminine voice). Ask one question at a time via AskUserQuestion.
 
 1. **Region**
    - Ask: "Where should this deploy?"
    - Options: **US (N. Virginia)** [default] / **Europe (Frankfurt)**
    - Store in order object as: `region` = `us-east-1` (US) or `eu-central-1` (Frankfurt)
-   - Both regions run the full stack (Connect + Q in Connect + Lex + Nova Sonic voice).
-     The Bedrock model profile is chosen automatically from the region (`us.*` vs `eu.*`).
+   - Both regions run the full stack (Connect + Q in Connect + Lex + Nova Sonic voice). The Bedrock model profile is chosen automatically from the region (`us.*` vs `eu.*`).
 
 2. **Language**
    - Ask: "What language should the agent speak?"
@@ -84,14 +72,11 @@ US/Virginia, English, feminine voice). Ask one question at a time via AskUserQue
    - Ask: "Which voice?"
    - Options: **Feminine** [default] / **Masculine**
    - Store in order object as: `voiceGender` = `feminine` or `masculine`
-   - Resolves to an Amazon Connect agentic voice used by the flow's Set-voice
-     block (English → KATIE/RONALD, German → VIKTORIA/SEBASTIAN). The agentic
-     catalog is disjoint from Polly's — Polly voice names are not valid under
-     the `connect:agentic` engine.
+   - Resolves to an Amazon Connect agentic voice used by the flow's Set-voice block (English → KATIE/RONALD, German → VIKTORIA/SEBASTIAN). The agentic catalog is disjoint from Polly's — Polly voice names are not valid under the `connect:agentic` engine.
 
 ### Aperitif side — Custom prompts [Ready, optional]
 
-Only offer this course in "Walk me through it" mode (express mode keeps the default prompts).
+Only offer this course in "Walk me through it" mode (express keeps the default prompts).
 
 Ask: "Want to customize the AI agent's prompts, or use the defaults?"
 
@@ -99,116 +84,73 @@ Options:
 - **Use the defaults** (default) — the built-in orchestration and self-service prompts.
 - **Customize** — tailor the orchestration prompt (the voice agent's persona/instructions) and/or the self-service prompt (how it answers from the knowledge base).
 
-If "Customize" is chosen, first seed the editable prompt files into the working directory:
-
-```bash
-<skill-dir>/scripts/init-prompts.sh <skill-dir> <cwd>
-```
-
-This writes `<cwd>/prompts/orchestration.md` and `<cwd>/prompts/self-service.md` (the blueprint defaults; existing files are kept). Then, for each prompt the user wants to change, show the current file contents and let them either:
+If "Customize" is chosen, first seed the editable prompt files: `csp init-prompts <cwd>` writes `<cwd>/prompts/orchestration.md` and `<cwd>/prompts/self-service.md` (the blueprint defaults; existing files are never clobbered). Then, for each prompt the user wants to change, show the current file contents and let them either:
 - **Paste** a full replacement prompt, or
 - **Describe** the persona/behavior they want — you draft the prompt, show it, and iterate until they approve.
 
-Write the approved text back to the corresponding `<cwd>/prompts/*.md` file. **Preserve the required scaffolding** (the render step validates it and will abort if it's missing):
+Write the approved text back to the corresponding `<cwd>/prompts/*.md` file. **Preserve the required scaffolding** (the render step validates it via the prompt contract and aborts if it's missing; `csp validate-prompts <cwd>/prompts` checks standalone):
 - `orchestration.md`: keep the `system:` block, `{{$.conversationHistory}}`, and the `<message>` formatting tag. `{{companyName}}` is substituted at render time; `{{$.locale}}` is a Q Connect runtime variable — leave it intact.
 - `self-service.md`: keep `{{$.contentExcerpt}}` (where retrieved KB documents are injected).
 
-These files are the source of truth and survive re-renders. If the user keeps the defaults, do nothing — the template's seed prompts are used automatically. Nothing is stored in the order/values JSON for prompts.
+These files are the source of truth and survive re-renders. If the user keeps the defaults, do nothing — the template's seed prompts are used automatically. Nothing is stored in the order JSON for prompts.
 
 ### Main — The agent's brain [Coming soon]
 
-**In this phase, these items are visible but NOT selectable.** Show them as preview content (e.g., "Model tier, knowledge base, and voice/persona options coming in a future release") but do NOT ask about them or collect values. Skip to Sides.
+**These items are visible but NOT selectable.** Show them as preview content (e.g., "Model tier and voice/persona options coming in a future release") but do NOT ask about them or collect values. Skip to Sides.
 
-Future items (for transparency only):
-- **Model tier**: Balanced (Haiku orchestration + Nova Pro answers) / Fast / Best
-- **Voice & persona**: KATIE (warm & concise) / other Amazon Connect agentic voices
-
-(The knowledge base is no longer a future item — it is selectable under Sides below.)
+Future items (for transparency only): **Model tier** (Balanced / Fast / Best), **Voice & persona** beyond the current agentic voices.
 
 ### Sides — Add-on capabilities [Multi-select]
 
-First tell the user: "Human transfer, tool calling (a SAP SD order lookup API backed by DynamoDB), and call recording (DTMF consent gate — press 1 to allow, 2 to decline; on consent the call is recorded Agent + Customer to the instance's `CALL_RECORDINGS` S3 storage) are always included — they ship built into the default contact flow."
+First tell the user: "Human transfer and tool calling (a SAP SD order lookup API backed by DynamoDB) are always included — they ship built into the default contact flow. Call recording ships as a ready-made consent module (`consent-analytics-setup`: DTMF consent gate — press 1 to allow, 2 to decline; on consent the call is recorded Agent + Customer and Contact Lens analytics turn on). The module is deployed but **not wired into the default flow**, so recording is off out of the box; to enable it, add an `InvokeFlowModule` step referencing it to the base flow in the Connect flow designer (see README → Capabilities)."
 
 Then ask: "Which add-on capabilities would you like? (You can choose multiple, or none.)"
 
 Options (only these are selectable in this phase):
-- **Customer Profiles** [Ready, default ON] — seed a demo customer profile (Alice Johnson, matching the context/tool persona) and look the caller up in the flow, surfacing the profile to the agent via `{{$.Custom.*}}`. Looks up by caller phone, then the web widget's `customerId` attribute, then a static demo phone fallback so it resolves on web-call / fresh-DID too. Defaults to **on** (the domain is already created by the instance). See "Customer Profiles" notes below for the native-block vs. Lambda decision.
-- **Analytics data lake** [Ready] — enables the Connect analytics data lake, sharing contact records, contact flow events, agent statistics, and contact statistics to a Glue database via Lake Formation. Queryable with Athena. Off by default.
-- **Contact-events logging** [Ready] — deploys an EventBridge rule + Lambda that logs contact lifecycle events (all DISCONNECTED events on the instance, any channel) as structured CloudWatch data. Off by default.
-- **Knowledge base (RAG)** [Ready] — deploys a Bedrock Managed Knowledge Base (S3 Vectors store + S3 data-source bucket) wired to the Q-in-Connect assistant; the self-service agent retrieves from it to ground answers. Off by default. **When selected, ask one follow-up:** "Where should the knowledge-base content come from? (a) the bundled sample document (a demo return policy), (b) a local folder you provide, (c) leave it empty for now — populate later." Remember the choice and path for the post-deploy population step (they are NOT part of the order file; population is a script action, not a template value).
+- **Customer Profiles** [Ready, default ON] — look the caller up in Customer Profiles and surface the profile to the agent via `{{$.Custom.*}}`. Looks up by caller phone number, then the web widget's identity (email, then account) — no fallback; unknown callers simply proceed anonymously. Defaults to **on** (the domain is already created by the instance). Deep-dive: `references/customer-profiles.md`.
+- **Analytics data lake** [Ready] — enables the Connect analytics data lake, sharing contact records, flow events, and agent/contact statistics to a Glue database via Lake Formation; queryable with Athena. Off by default.
+- **Contact-events logging** [Ready] — deploys an EventBridge rule + Lambda that logs contact lifecycle events (all DISCONNECTED events, any channel) as structured CloudWatch data. Off by default.
+- **Knowledge base (RAG)** [Ready] — deploys a Bedrock Managed Knowledge Base (S3 Vectors store + data-source bucket) wired to the Q-in-Connect assistant; the self-service agent retrieves from it to ground answers. Off by default. **When selected, ask one follow-up:** "Where should the knowledge-base content come from? (a) the bundled sample document (a demo return policy), (b) a local folder you provide, (c) leave it empty for now — populate later." Store the choice as `kbContent` in the order file (see "The order file" below).
 
-Future options (visible, NOT selectable):
-- **Guardrails** [Coming soon] — content-safety filters
-- **External API tools (AgentCore)** [Coming soon] — register an OpenAPI schema with the gateway
+Future options (visible, NOT selectable): **Guardrails** [Coming soon], **External API tools (AgentCore)** [Coming soon].
 
 Store selections in order object as:
-- `customerProfilesEnabled` (boolean): `true` if Customer Profiles selected. **Defaults to `true`** in `build-values.sh` when omitted (unlike the other add-on flags, which default false). When enabled, the UpdateSessionContext Lambda resolves the caller's profile and injects identity data into the Q Connect session.
-- `dataLakeEnabled` (boolean): `true` if Analytics data lake selected, `false` otherwise
-- `contactEventsEnabled` (boolean): `true` if Contact-events logging selected, `false` otherwise
-- `knowledgeBaseEnabled` (boolean): `true` if Knowledge base selected, `false` otherwise
-- `retainData` (boolean): **Defaults to `true`** in `build-values.sh` when omitted — data-bearing resources (Connect instance, storage/KB/schema/SAP buckets, KMS key, sap-orders table) survive `cdk destroy` for data protection. Set `false` only for disposable deployments (tests/demos) so `cdk destroy --all` removes everything including bucket contents. Not an interview question — omit unless the user explicitly asks for a fully deletable deployment.
+- `customerProfilesEnabled` (boolean): **defaults to `true`** when omitted (unlike the other add-on flags, which default false). When enabled, the UpdateSessionContext Lambda resolves the caller's profile and injects identity data into the Q Connect session.
+- `dataLakeEnabled` (boolean), `contactEventsEnabled` (boolean), `knowledgeBaseEnabled` (boolean): `true` if selected, `false` otherwise.
+- `retainData` (boolean): **defaults to `true`** when omitted — data-bearing resources (Connect instance, storage/KB/schema/SAP buckets, KMS key, sap-orders table) survive `cdk destroy`. Set `false` only for disposable deployments (tests/demos). Not an interview question — omit unless the user explicitly asks for a fully deletable deployment.
 
 ### Drinks — Reach & operate
 
 1. **Phone number** [Ready]
    - Ask: "How will you call it?"
    - Options:
-     - **Claim a UK number** (default) — call in to test immediately
-     - **Web-call frontend** — browser-based calling (CloudFront + Cognito + API Gateway)
-     - **I'll add a number myself** in the console
-   
-   - If "Web-call frontend" is chosen:
-     - Store in order object as: `frontendEnabled = true`
-     - Set orchestration variable `claimUkDid = false` (web calling covers testing; skip UK DID phase)
-     - Note to user: "The WebcallWidgetStack will deploy with CloudFront, Cognito, and API Gateway. After deployment, you'll add widgets in the Connect console and populate `config.connectWidgets` in the rendered project for full functionality."
-   
-   - If "Claim a UK number" is chosen:
-     - Store in order object as: `frontendEnabled = false`
-     - Set orchestration variable `claimUkDid = true`
-   
-   - If "I'll add a number myself" is chosen:
-     - Store in order object as: `frontendEnabled = false`
-     - Set orchestration variable `claimUkDid = false`
+     - **Claim a UK number** (default) — call in to test immediately → `frontendEnabled = false`, `claimUkDid = true`
+     - **Web-call frontend** — browser-based calling (CloudFront + Cognito + API Gateway) → `frontendEnabled = true`, `claimUkDid = false` (web calling covers testing). Note to user: "The WebcallWidgetStack will deploy; after deployment you'll create a widget in the Connect console and I'll wire it up."
+     - **I'll add a number myself** in the console → `frontendEnabled = false`, `claimUkDid = false`
 
 2. **Observability dashboard** [Coming soon]
-   - Visible, NOT selectable. Basic contact-events logging is always deployed; the full dashboard will be added in a future release.
+   - Visible, NOT selectable. Basic contact-events logging is always deployable; the full dashboard will be added in a future release.
 
 ### Digestif — Operational [Ready]
 
-Ask: "Keep the Connect instance if you tear the stack down?"
+Inform (do NOT ask): "If you tear the stacks down later, the Connect instance and other data-bearing resources are **kept by default**." This is `retainData` in the order file — it defaults to `true` (instance, storage/KB/schema/SAP buckets, KMS key, and the sap-orders table survive `cdk destroy`; see the Sides course). It is not an interview question — set `retainData: false` in the order only if the user explicitly asks for a fully deletable test/demo deployment.
 
-Default: `No` (accept default in express mode)
-
-Note: This controls `retainConnectInstance` in `lib/config.ts`. It's an advanced toggle kept in the config file; this course simply informs the user of the default behavior. You do NOT need to store it in the order JSON (it's hardcoded in the template).
-
-Then inform (do NOT ask): "Stored data (call recordings, chat transcripts, exported reports, Customer Profiles data) is always encrypted with a customer-managed KMS key."
-
-Note: storage encryption is NOT configurable — there is no `encryptionEnabled` flag (a legacy key in an old order file is ignored by `build-values.sh`). The blueprint always creates a CMK and applies it to the storage bucket, the Connect storage configs, and the Customer Profiles domain. The Connect storage `encryptionConfig` only supports SSE_KMS, which is why a key is required. The key's removal policy follows `retainConnectInstance`. The key is created with **automatic annual key rotation enabled** (`enableKeyRotation: true` in `connect-instance-stack.ts`), following AWS best practice for customer-managed keys.
+Then inform (do NOT ask): "Stored data (call recordings, chat transcripts, exported reports, Customer Profiles data) is always encrypted with a customer-managed KMS key." Encryption is NOT configurable — the blueprint always creates a CMK (with automatic annual rotation) and applies it to the storage bucket, the Connect storage configs, and the Customer Profiles domain; Connect storage only supports SSE_KMS. The key's removal policy follows `retainData`.
 
 Then ask: "How should agents and admins sign in to Connect? (a) Connect-managed users (default) — usernames/passwords managed inside Connect, (b) IAM Identity Center SSO — sign in through your organization's Identity Center."
 
 Default: `(a) Connect-managed` (accept default in express mode).
 
-> ⚠️ **This choice is IRREVERSIBLE.** The identity management type is fixed at instance
-> creation and can never be changed — switching later means destroying and recreating the
-> entire Connect instance (losing users, claimed numbers, and configuration). Make sure the
-> user understands this before proceeding.
+> ⚠️ **This choice is IRREVERSIBLE.** The identity management type is fixed at instance creation and can never be changed — switching later means destroying and recreating the entire Connect instance (losing users, claimed numbers, and configuration). Make sure the user understands this before proceeding.
 
 - **(a) Connect-managed** — store `identityCenterEnabled: false` (default when omitted).
-- **(b) Identity Center SSO** — store `identityCenterEnabled: true`, and immediately tell
-  the user about the **mandatory manual step** that must be completed BEFORE deployment:
+- **(b) Identity Center SSO** — store `identityCenterEnabled: true`, and immediately tell the user about the **mandatory manual step** that must be completed BEFORE deployment:
 
-  1. Open the **IAM Identity Center** console → **Applications** → **Add application** →
-     add the **Amazon Connect** catalog application (or a custom SAML 2.0 app)
+  1. Open the **IAM Identity Center** console → **Applications** → **Add application** → add the **Amazon Connect** catalog application (or a custom SAML 2.0 app)
   2. Download the **IAM Identity Center SAML metadata file** for that application
-  3. Save it as **`saml-metadata.xml`** in the current working directory (next to
-     `.connect-skill-order.<projectName>.json`)
+  3. Save it as **`saml-metadata.xml`** in the current working directory (next to the order file)
 
-  The CDK synth creates the IAM SAML Provider from this file and **fails without it** —
-  preflight (Phase 2) verifies the file exists before any deploy is attempted. The user can
-  complete this step now or before Phase 2; do not proceed past preflight until it's there.
-  If Identity Center lives in a different account (e.g. the org management account), that's
-  fine — the SAML flow is browser-based and needs no cross-account IAM trust.
+  The CDK synth creates the IAM SAML Provider from this file and **fails without it** — preflight (Phase 2) verifies it exists and blocks until then. Identity Center in a different account (e.g. org management) is fine — the SAML flow is browser-based, no cross-account IAM trust needed. Full guide: `references/identity-center-sso.md`.
 
 ### The Check — Order confirmation
 
@@ -218,9 +160,8 @@ After gathering all inputs, display a summary of the user's selections:
 Your order:
   Project:      <projectName>
   Company:      <companyName>
-  Greeting:     <greeting>
-  Sides:        [Human transfer] [Tool calling] (or "None" if both false)
-  Data lake:    [Enabled] / [Disabled]
+  Sides:        Human transfer, tool calling (always included); recording-consent module (deployed, unwired)
+  Profiles:     [Enabled] / [Disabled]     Data lake: [Enabled] / [Disabled]
   Events log:   [Enabled] / [Disabled]
   Knowledge:    [Sample data] / [Own content: <path>] / [Empty] / [Disabled]
   Sign-in:      [Connect-managed] / [Identity Center SSO — irreversible]
@@ -230,291 +171,100 @@ Your order:
   Deploy to:    AWS account <accountId> (<region>)
 ```
 
-Ask: "Place this order?"
+For the account line, run `aws sts get-caller-identity` and show the account ID.
 
-If confirmed, proceed to build the validated values JSON.
+Ask: "Place this order?" If confirmed, write the order file.
 
-### Region Selection
+### The order file
 
-The blueprint deploys to **us-east-1 (N. Virginia)** [default] or **eu-central-1 (Frankfurt)**,
-chosen in the Locale & region course. Both run the full Connect + Q in Connect + Lex + Nova Sonic
-voice stack; the Bedrock inference-profile prefix (`us.*` / `eu.*`) is derived from the region.
-Show the chosen region in the order summary. All deploy/preflight/claim/smoke steps run against
-that region (`CDK_DEFAULT_REGION` and the `[region]` script argument).
-
-### AWS Account Confirmation
-
-Run:
-```bash
-aws sts get-caller-identity
-```
-
-Capture the account ID for the order summary. The confirmation is included in "Place this order?" above.
-
-### Build Values JSON
-
-After the user confirms the order, create two files:
-
-1. **Write the order object** to `.connect-skill-order.<projectName>.json` in the current working directory (the project-suffixed name lets multiple deployments coexist without clobbering each other's orders):
+Write the order object to `.connect-skill-order.<projectName>.json` in the current working directory (the project-suffixed name lets multiple deployments coexist):
 
 ```json
 {
   "projectName": "<projectName>",
   "companyName": "<companyName>",
-  "greeting": "<greeting>",
   "region": "<us-east-1 | eu-central-1>",
   "language": "<en | de>",
   "voiceGender": "<feminine | masculine>",
   "customerProfilesEnabled": <boolean>,
   "frontendEnabled": <boolean>,
+  "dataLakeEnabled": <boolean>,
   "contactEventsEnabled": <boolean>,
   "knowledgeBaseEnabled": <boolean>,
-  "identityCenterEnabled": <boolean>
+  "identityCenterEnabled": <boolean>,
+  "retainData": <boolean>,
+  "claimUkDid": <boolean>,
+  "kbContent": "sample" | "<content-path>"
 }
 ```
 
-Note: All values except `projectName` are optional in the order file. The writer script applies defaults for any missing keys.
+- Only `projectName` is required; `csp values` applies the defaults documented above for every missing key, type-checks the booleans, and rejects invalid names/text before anything is rendered.
+- `claimUkDid` (run Phase 5?) and `kbContent` (`"sample"` | a content path; absent = leave the KB empty) are **orchestration prefs**: they never reach the template values, but persisting them makes the deployment fully reproducible from the order file alone (`csp deploy --order-file <file>` needs no extra flags).
+- Legacy keys (`greeting`, `transferEnabled`, `toolEnabled`, `recordingEnabled`, `encryptionEnabled`) are ignored — those aspects are always on, ship as a module, or are prompt-driven now.
 
-2. **Run the validated writer** to produce `.connect-skill-values.json`:
-
-```bash
-<skill-dir>/scripts/build-values.sh \
-  <cwd>/.connect-skill-order.<projectName>.json \
-  <cwd>/csp-<projectName>/.connect-skill-values.json
-```
-
-The writer script:
-- Validates `projectName` (rejects invalid names before any file copy)
-- Applies defaults for missing order keys (`companyName`, `greeting`, etc.)
-- Type-checks boolean flags (`customerProfilesEnabled`, `frontendEnabled`, …); legacy
-  `transferEnabled` / `toolEnabled` / `recordingEnabled` / `encryptionEnabled` keys are ignored
-  (those features are always on)
-- Escapes free text (`greeting`, `companyName`) for JSON and TypeScript string contexts
-- Derives the Bedrock model IDs (including the KB parsing model) from `region` (`us.*` in
-  Virginia, `eu.*` in Frankfurt) and the
-  Lex locale / TTS language / Polly voice from `language` + `voiceGender`. `region` **is** emitted
-  to the values file so `render-templates.sh` can hardcode it into `bin/connect-blueprint.ts`
-  (pinning the deploy region); it also drives `CDK_DEFAULT_REGION`/`AWS_REGION` and the helper
-  scripts.
-- Emits a schema-validated `.connect-skill-values.json` **into the project directory** (`<cwd>/csp-<projectName>/`) — the values file is a generated artifact scoped to its deployment, so parallel projects never overwrite each other; `build-values.sh` creates the directory if needed
-
-Orchestration prefs — `claimUkDid` (run Phase 5?) and `kbContent` (`"sample"` | a content path; absent = skip) — are stored in the **order file** but are not consumed by the templates: `build-values.sh` ignores them, so they never reach the values file. Persisting them makes a deployment fully reproducible from the order file alone (`scripts/deploy.py --order-file ...` needs no extra flags).
+The values file (`.connect-skill-values.json`) is a **derived artifact** produced by `csp values` in Phase 3 — model IDs, Lex locale, TTS language, and voice are derived from `region` + `language` + `voiceGender`. Never hand-edit it; edit the order and re-run `csp values`.
 
 ## Phase 2: Preflight
 
-Run preflight checks to validate the environment:
-
 ```bash
-<skill-dir>/scripts/preflight.sh <region> <cwd>/.connect-skill-order.<projectName>.json
+csp preflight <region> <cwd>/.connect-skill-order.<projectName>.json --bootstrap
 ```
 
-(The order-file argument is optional but always pass it — it enables the Identity Center
-prerequisite gate when `identityCenterEnabled` is true.)
+The order-file argument is optional but always pass it — it enables the Identity Center prerequisite gate when `identityCenterEnabled` is true. `--bootstrap` runs `cdk bootstrap` if the CDKToolkit stack is missing (without the flag, a missing bootstrap is reported as a failure).
 
-The preflight script checks:
-- AWS credentials configured
-- CDK installed (global or npx)
-- CDK bootstrap in us-east-1 (runs bootstrap if missing)
-- Bedrock model access in the target region (us-east-1: amazon.nova-2-sonic-v1:0; eu-central-1:
-  amazon.nova-pro-v1:0 — Nova Sonic voice is delivered via Amazon Connect there, not listable in
-  Bedrock directly)
-- When `identityCenterEnabled`: `saml-metadata.xml` exists next to the order file and looks
-  like SAML metadata (**hard stop** if missing — the manual Identity Center step from Phase 1
-  must be completed first, because the identity type is immutable and synth requires the file);
-  plus a soft probe for a visible Identity Center instance (warning only — org instances often
-  live in the management account)
+Checks: AWS credentials; CDK availability (`cdk` on PATH or `npx --no-install cdk`); CDK bootstrap in the target region; Bedrock model access (probes Nova Pro only — full model list in `references/troubleshooting.md`); when `identityCenterEnabled`, that `saml-metadata.xml` exists next to the order file and looks like SAML metadata (**hard stop** if missing), plus a soft probe for a visible Identity Center instance (warning only — org instances often live in the management account).
 
 If preflight fails, report the error and stop. Common failures:
-- **Bedrock model not enabled**: User must visit https://console.aws.amazon.com/bedrock/home?region=us-east-1#/modelaccess and enable amazon.nova-2-sonic-v1:0
-- **CDK bootstrap fails**: User needs IAM permissions (see references/troubleshooting.md)
-- **saml-metadata.xml missing**: The user has not finished the manual Identity Center
-  application step — repeat the three-step instruction from Phase 1 (Digestif) and re-run
-  preflight once the file is in place
+- **Bedrock model not enabled**: visit https://console.aws.amazon.com/bedrock/home?region=<region>#/modelaccess and enable the reported model
+- **CDK bootstrap fails**: the user needs IAM permissions (see `references/troubleshooting.md`)
+- **saml-metadata.xml missing**: repeat the three-step Identity Center instruction from Phase 1 (Digestif) and re-run preflight once the file is in place
 
 ## Phase 3: Render Templates
 
-Render the CDK app from templates:
-
 ```bash
-<skill-dir>/scripts/render-templates.sh \
-  <cwd>/csp-<projectName>/.connect-skill-values.json \
-  <skill-dir>/templates/cdk-app \
-  <cwd>/csp-<projectName>
+csp values <cwd>/.connect-skill-order.<projectName>.json <cwd>/csp-<projectName>/.connect-skill-values.json
+csp render <cwd>/csp-<projectName>/.connect-skill-values.json <skill-dir>/templates/cdk-app <cwd>/csp-<projectName>
 ```
 
-This script:
-- Copies all files from `templates/cdk-app` to `<cwd>/csp-<projectName>` (the `csp-` folder
-  prefix marks generated output — one `csp-*/` gitignore entry covers every rendered project;
-  AWS resource names are NOT prefixed, they use the bare `projectName` via `config.prefix`)
-- Carries `saml-metadata.xml` from the working dir into the rendered project root when present
-  (Identity Center deployments — `connect-instance-stack.ts` reads it at synth time; the
-  working-dir copy is the source of truth and survives re-renders, like custom prompts)
-- Replaces all `{{key}}` placeholders with values from the JSON file
-- Validates no unsubstituted placeholders remain
+`csp render`:
+- Copies `templates/cdk-app` to `<cwd>/csp-<projectName>` (the `csp-` prefix marks generated output — one gitignore entry covers every rendered project; AWS resource names use the bare `projectName`)
+- Carries custom `prompts/*.md` and `saml-metadata.xml` from the working dir into the rendered project (the working-dir copies are the source of truth and survive re-renders)
+- Replaces all `{{key}}` placeholders with values from the JSON file and writes `lib/deployment-values.json` (the CDK-app-facing subset that `lib/config.ts` imports)
+- Validates the prompt contract and that no unsubstituted placeholders remain — a validation error means fix the prompt files or order, then re-run
 
-The rendered project structure:
-```
-csp-<projectName>/
-├── bin/connect-blueprint.ts      # app entry: wires stacks, derives stack-ID namespace from prefix
-├── lib/
-│   ├── config.ts                 # single source of truth: prefix (= projectName), capability flags
-│   ├── blueprint-stack.ts        # base Stack: resolves prefix once, exposes this.namer
-│   ├── connect-instance-stack.ts
-│   ├── queues-stack.ts
-│   ├── wisdom-stack.ts           # Q in Connect assistant + 2 AI agents (orchestrator, self-service)
-│   ├── lex-bot-stack.ts
-│   ├── contact-flow-stack.ts     # composed flow (transfer/tool branches per capability flags)
-│   ├── agentcore-gateway-stack.ts  # AgentCore MCP gateway + SAP order lookup tool, registered as instance MCP server
-│   ├── connect-flow-lambdas-stack.ts
-│   ├── contact-events-stack.ts   # EventBridge logging
-│   ├── webcall-widget-stack.ts   # CloudFront + Cognito + API Gateway (conditional)
-│   └── post-deploy-stack.ts      # wires default AI agents to assistant
-├── flows/
-│   └── basic-agent-flow.json      # base contact flow (composed with transfer branches at synth)
-├── cdk.json
-├── tsconfig.json
-└── package.json
-```
+Success looks like a rendered `csp-<projectName>/` CDK app (`bin/`, `lib/` stacks, `flows/`). Architecture, naming (`config.prefix` → `this.namer`, instance alias = `<prefix>-<accountId>`), and capability composition are documented in `AGENTS.md`; the base flow ships with transfer and tool calling built in and is deployed as-is with only placeholder substitution (the recording-consent module deploys alongside it, unwired — see the Sides course).
 
-**Naming:** `config.prefix` is rendered from `projectName` and is the single source of truth for every resource name. Each stack extends `BlueprintStack` and names resources via `this.namer` (`.connect()` / `.lex()` / `.wisdom()` / `.instanceAlias()`), so the prefix is enforced deterministically. The Connect instance alias folds in the AWS account ID (`<prefix>-<accountId>`) because the alias is a globally-unique DNS hostname. `resolvePrefix()` throws if the template is deployed unrendered, so a placeholder can never become a real resource name.
-
-**Capability composition:** The base flow (`flows/basic-agent-flow.json`) ships with human transfer (the agent's Escalate outcome routed to a human queue), tool calling, and the recording-consent gate built in, and is deployed as-is — only ARN/name placeholders are substituted at synth time (the composable transforms in `flow-compose.ts` are disabled; dynamically toggling these features kept breaking the backend wiring).
-
-**Customer Profiles:** The blueprint always creates a Customer Profiles domain on the instance. When `customerProfilesEnabled` (default on), it deploys the `UpdateSessionContext` Lambda (ARM64, Python 3.13) that `SearchProfiles` by phone (ANI), email, or customerId (`_account`) and bridges the result into the Q Connect session via `UpdateSessionData(namespace="Custom")` — the agent reads it as `{{$.Custom.*}}`. No demo profile is seeded; use `scripts/setup-test-users.sh` to create test profiles. The web frontend passes `customerId` in the widget JWT (surfaces as `$.Attributes.customerId`), which the lookup uses, so the WebRTC channel is covered.
-
-**Call recording (always on):** The flow opens with a DTMF consent gate (in the consent-analytics module) — a `GetParticipantInput` block asks the caller to press 1 to allow recording or 2 to decline; press 2 / timeout / no-match continues without recording. Recording uses `UpdateContactRecordingAndAnalyticsBehavior`; the enable path records `Agent` + `Customer` with **`IVRRecordingBehavior: Enabled`** — that IVR/automated-interaction setting is required for audio to be captured in this AI-agent (automated) flow, and recordings land in the instance's `CALL_RECORDINGS` S3 storage (configured in `connect-instance-stack.ts`). The localized consent prompt (with `{{companyName}}` rendered) lives in the prompt-texts data table seed.
-
-### AgentCore MCP tool integration
-
-The blueprint always wires the AgentCore gateway's tools into the orchestration AI agent entirely in CDK (no console steps). Three pieces must all be present, or the deploy fails — they were captured from a console-configured agent and the exact strings matter:
-
-1. **MCP server integration** (`AgentCoreGatewayStack`) — the gateway is registered with the instance via an AppIntegrations `CfnApplication` (`applicationType: 'MCP_SERVER'`, `accessUrl` = the gateway's `https://<gatewayId>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp` endpoint) plus a Connect `CfnIntegrationAssociation` (`integrationType: 'APPLICATION'`, `instanceId` = the instance **ARN**). The application's `namespace` is set to the bare gateway id. This is the CDK equivalent of the console's **Add integration → MCP server** flow; `CreateIntegrationAssociation` has no dedicated MCP type — `APPLICATION` is correct (the API docs prose omits it, but the enum includes it).
-
-2. **Security-profile grant** (`WisdomStack`) — the AI-agent `CfnSecurityProfile` carries an `applications` entry with **`type: 'MCP'`** (required — without it Connect treats it as a third-party app that only accepts `ACCESS` and rejects the tool ids with "Invalid application permission found"), `namespace` = the gateway id, and `applicationPermissions` = the AgentCore tool names (`<target>___<tool>`, e.g. `SapOrderLookup___get_order_status`). Without this grant the Agent Designer shows "Insufficient Permissions" and the agent update is rejected.
-
-3. **Agent tool allow-list** (`WisdomStack`) — each tool is a `MODEL_CONTEXT_PROTOCOL` entry in the orchestrator's `toolConfigurations`:
-   - `toolName`: the AgentCore tool name, `<target>___<tool>` (e.g. `SapOrderLookup___get_order_status`)
-   - `toolId`: the **namespace-qualified** id, `gateway_<gatewayId>__<target>___<tool>` (e.g. `gateway_finalreview-gateway-odaj4wxasg__SapOrderLookup___get_order_status`). This mirrors the built-in Retrieve tool's `aws_service__qconnect_Retrieve` (`<namespace>__<tool>`). Using the bare `<target>___<tool>` as the id fails with "MCP tool with ID … not found in MCP tools".
-   - Do **not** set `description` on a gateway-sourced MCP tool — it's owned by the MCP server and QConnect rejects an override (400).
-
-   AgentCore namespaces a Lambda target's tools as `<targetName>___<toolName>` (the SAP order tool Lambda parses the trailing `___` segment of `bedrockAgentCoreToolName`). The gateway exposes three tools via this target: `get_order_status`, `get_delivery_tracking`, and `get_invoice_status`, backed by a DynamoDB table seeded with sample SAP SD order-to-cash data.
-
-**Ordering:** `WisdomStack` depends on `AgentCoreGatewayStack` (the gateway must be a registered MCP server on the instance before the agent that references its tools is created). To re-capture these strings if AWS changes the schema: configure the tools on an agent in the console, **publish** the agent version, then `aws qconnect get-ai-agent …` and `aws connect list-security-profile-applications …` and read the live `toolId` / `applicationPermissions`. (Note: the console's draft must be **published** before the API reflects the new tools.)
+**AgentCore MCP tools:** the gateway's five SAP order-lookup tools (`get_order_history`, `get_order_status`, `get_delivery_tracking`, `get_invoice_status`, `get_active_promotions` — canonical list: `SAP_GATEWAY_TOOLS` in `lib/agentcore-gateway-stack.ts`) are wired into the orchestration agent entirely in CDK — MCP-server integration, security-profile grant, and agent tool allow-list. The captured naming conventions (`<target>___<tool>`, `gateway_<gatewayId>__…`, `type: 'MCP'`) are exacting; if a deploy fails around them, or you need to re-capture after an AWS schema change, see "AgentCore MCP tool wiring" in `references/connect-ai-agent-block.md`.
 
 ## Phase 4: Deploy
 
-Deploy the CDK stacks:
-
 ```bash
-cd <cwd>/csp-<projectName>
-npm install
-AWS_REGION=<region> CDK_DEFAULT_REGION=<region> npx cdk deploy --all --require-approval never --outputs-file cdk-outputs.json
+csp synth <cwd>/csp-<projectName> <region>
+csp cdk-deploy <cwd>/csp-<projectName> <region>
 ```
 
-> **Region pinning:** the rendered `bin/connect-blueprint.ts` hardcodes the selected region
-> (`region: '<region>'`, from `values.json`), so the deploy targets the right region even if the
-> env vars above don't reach the node process. Export `AWS_REGION` too (belt-and-suspenders) so
-> the AWS SDK calls inside custom resources use the same region. Never rely on `CDK_DEFAULT_REGION`
-> alone — an inline var that fails to propagate silently deploys to the profile's default region
-> (e.g. us-east-1 with `eu.*` model IDs, which fail QConnect validation).
+`csp synth` runs `npm ci` + type-check + `cdk synth` (cheap validation, no AWS resources); `csp cdk-deploy` runs `cdk deploy --all` with an outputs file, both region-pinned (the rendered app also hardcodes the region, so a stray default-region profile can't misroute the deploy). Deployment takes ~20 minutes end to end and creates seven stacks — ConnectInstance, Queues, Wisdom, ContactFlow, AgentCoreGateway, FlowLambdas, PostDeploy — plus **ContactEvents** when `contactEventsEnabled` and **WebcallWidget** when `frontendEnabled` (stack IDs are `<projectName>-<Suffix>`; see `AGENTS.md`).
 
-This deploys **nine stacks** (always deployed):
-1. **ConnectInstance** - Connect instance with Customer Profiles and storage bucket
-2. **Queues** - default queue and hours of operation
-3. **Wisdom** - Q in Connect assistant with knowledge base and two AI agents (orchestrator, self-service)
-4. **LexBot** - Lex bot for voice input (wired to the Wisdom assistant)
-5. **ContactFlow** - contact flow with AI Agent block (composed from base + capability branches)
-6. **AgentCoreGateway** - Bedrock AgentCore MCP gateway + SAP order lookup Lambda target (DynamoDB-backed order status, delivery tracking, and invoice status tools), registered with the instance as an MCP server integration (AppIntegrations `MCP_SERVER` application + Connect `APPLICATION` association). The Wisdom stack additionally (a) allow-lists the gateway's tools on the orchestration AI agent and (b) grants them on the AI-agent security profile. See "AgentCore MCP tool integration" below for the exact wiring.
-7. **FlowLambdas** - Lambda functions for contact-flow use. The `DescribeContact` helper is always deployed; the `UpdateSessionContext` Lambda (Customer Profile resolution + session data injection) is deployed **only when `customerProfilesEnabled`** (invoked by `provide-agent-context`). Each is associated with the instance when present.
-8. **ContactEvents** - EventBridge logging for contact events
-9. **PostDeploy** - Custom Resource to set default AI agents on the assistant
+From `<project-dir>/cdk-outputs.json`, extract for the next phases: `InstanceId` / `InstanceArn` / `InstanceAlias` (`<projectName>-ConnectInstance`), `AssistantId` / `OrchestrationAgentId` (`<projectName>-Wisdom`), `ContactFlowId` (`<projectName>-ContactFlow`), and `CloudFrontUrl` (`<projectName>-WebcallWidget`, frontend only).
 
-**Plus one conditional stack:**
-10. **WebcallWidget** (only when `frontendEnabled` is `true`) - CloudFront distribution, Cognito user pool, and API Gateway for browser-based web calling. Widgets are added in the Connect console after deployment and `config.connectWidgets` populated for full functionality.
-
-Deployment takes 3-5 minutes. The `cdk-outputs.json` file will contain outputs for each stack. Key outputs (stack IDs use the pattern `<projectName>-<StackSuffix>`):
-
-```json
-{
-  "<projectName>-ConnectInstance": {
-    "InstanceId": "...",
-    "InstanceArn": "...",
-    "InstanceAlias": "...",
-    "CustomerProfilesDomainName": "...",
-    "StorageBucketName": "..."
-  },
-  "<projectName>-Wisdom": {
-    "AssistantId": "...",
-    "OrchestrationAgentId": "...",
-    "OrchestrationAgentArn": "..."
-  },
-  "<projectName>-ContactFlow": {
-    "ContactFlowId": "...",
-    "ContactFlowArn": "..."
-  },
-  "<projectName>-Queues": {
-    "QueueArn": "...",
-    "HoursOfOperationArn": "..."
-  }
-}
-```
-
-(Other stacks also emit outputs; the above are the most commonly referenced. All stack IDs follow the `<projectName>-<StackSuffix>` pattern.)
-
-Extract the `InstanceId`, `ContactFlowId`, `AssistantId`, and `OrchestrationAgentId` for the next phases.
-
-### If Deploy Fails
-
-Common errors:
-- **InvalidContactFlowException on ContactFlow stack**: The AI Agent block JSON in the flow may be invalid. See references/troubleshooting.md.
-- **CDK bootstrap error**: Run `cdk bootstrap aws://<account>/us-east-1` manually.
-- **IAM permission denied**: User needs IAM permissions to create Connect resources.
-- **Bedrock model access denied**: Ensure Nova Sonic 2, Claude Haiku 4.5, and Nova Pro are enabled in the Bedrock console (us-east-1).
+If deploy fails: common causes are InvalidContactFlowException on the ContactFlow stack, CDK bootstrap issues, IAM permission denials, and Bedrock model access — **Claude Haiku 4.5 AND Nova Pro must both be enabled** (preflight probes only Nova Pro, so a missing Haiku enablement surfaces here; the voice is Connect-hosted agentic voice, not a Bedrock enablement). See `references/troubleshooting.md` for all of them. Do not proceed to the next phase on failure.
 
 ### Populate the knowledge base (only when `knowledgeBaseEnabled`)
 
-The knowledge base deploys **empty** — retrieval returns nothing until content is
-ingested. Based on the user's Phase 1 choice:
+The knowledge base deploys **empty** — retrieval returns nothing until content is ingested. Based on the Phase 1 choice:
 
-- **(a) Sample data** — run the sync script with no content argument; it uploads the
-  skill's bundled `sample-data/` folder (demo return policy):
+- **(a) Sample data**: `csp sync-kb <cwd>/csp-<projectName> <skill-dir>/sample-data <region>`
+- **(b) Own content**: `csp sync-kb <cwd>/csp-<projectName> <content-path> <region>`
+- **(c) Empty for now**: skip; the user can run the same command any time later.
 
-```bash
-<skill-dir>/scripts/sync-kb.sh <project-dir> "" <region>
-```
-
-  (An empty second argument or omitting it selects the bundled sample data.)
-
-- **(b) Own content** — pass the user's folder or file:
-
-```bash
-<skill-dir>/scripts/sync-kb.sh <project-dir> <content-path> <region>
-```
-
-- **(c) Empty for now** — skip this step; tell the user they can populate later by
-  running the same script at any time.
-
-The script resolves the KB bucket / knowledge-base ID / data-source ID from the
-project's `cdk-outputs.json`, uploads the content to S3, starts a Bedrock ingestion
-job, and polls until it completes, reporting scanned/indexed/failed document counts.
-It is idempotent — re-run it whenever content changes.
+It resolves the KB bucket / knowledge-base ID / data-source ID from `cdk-outputs.json`, uploads to S3, starts a Bedrock ingestion job, and polls until it completes. Idempotent — re-run whenever content changes.
 
 ### Complete Identity Center SSO setup (only when `identityCenterEnabled`)
 
-The deploy created the instance with SAML identity plus the IAM SAML Provider and
-Federation Role — but sign-in will not work until the Identity Center application is
-finished by hand. Walk the user through it with **concrete values from the ConnectInstance
-stack outputs** (`SamlRelayStateUrl`, `SamlProviderArn`, `SamlFederationRoleArn`):
+Sign-in will not work until the Identity Center application is finished by hand. Walk the user through it with **concrete values from the ConnectInstance stack outputs** (`SamlRelayStateUrl`, `SamlProviderArn`, `SamlFederationRoleArn`) — full walkthrough with screenshots-level detail in `references/identity-center-sso.md`:
 
-1. **Application properties** (Identity Center → your Connect app): set the **Relay state**
-   to the `SamlRelayStateUrl` output. Application ACS URL: `https://signin.aws.amazon.com/saml`,
-   SAML audience: `urn:amazon:webservices`.
-2. **Attribute mappings** — ⚠️ **mandatory; the single most common failure is skipping these.**
-   A freshly-added catalog app has **no** mappings by default, and without the `Role` attribute
-   the sign-in fails with **"Your request included an invalid SAML response"** — which looks like
-   a metadata/cert problem but is not (the auto-created SAML provider + federation role are fine;
-   the assertion simply carries no role). Tell the user to add all three rows under
-   Identity Center → the app → **Actions → Edit attribute mappings**:
+1. **Application properties** (Identity Center → your Connect app): Relay state = the `SamlRelayStateUrl` output; ACS URL `https://signin.aws.amazon.com/saml`; SAML audience `urn:amazon:webservices`.
+2. **Attribute mappings** — ⚠️ **mandatory; the single most common failure is skipping these.** A fresh catalog app has NO mappings; without the `Role` attribute sign-in fails with **"Your request included an invalid SAML response"** (it looks like a cert problem but isn't). Add all three rows under the app → **Actions → Edit attribute mappings**:
 
    | Attribute | Value | Format |
    |-----------|-------|--------|
@@ -522,375 +272,127 @@ stack outputs** (`SamlRelayStateUrl`, `SamlProviderArn`, `SamlFederationRoleArn`
    | `https://aws.amazon.com/SAML/Attributes/RoleSessionName` | `${user:email}` | `unspecified` |
    | `https://aws.amazon.com/SAML/Attributes/Role` | `<SamlFederationRoleArn>,<SamlProviderArn>` | `unspecified` |
 
-   `Subject` usually already exists — ensure its format is `emailAddress`. Fill in the two ARNs
-   from the outputs as a comma-separated pair, **`SamlFederationRoleArn` first**, **no space after
-   the comma**.
+   The Role value is the two ARNs comma-separated, **role ARN first, no space after the comma**.
 3. **Assign users/groups** to the application in Identity Center (grants the app tile only).
-4. **Create matching Connect users** — the **Login must be exactly the user's Identity Center
-   email** (Connect matches the assertion on the email, not the IDC username; a username-based
-   login yields "not been onboarded"). Offer to do this via the CLI instead of the console. First
-   discover the profile IDs (`aws connect list-security-profiles` / `list-routing-profiles
-   --instance-id <id> --region <region>` — the blueprint ships an `Admin` profile and a
-   `<prefix>-default-routing-profile`), then:
+4. **Create matching Connect users** — the **Login must be exactly the user's Identity Center email**. Offer to do it via `aws connect create-user` (discover profile IDs with `list-security-profiles` / `list-routing-profiles`; the blueprint ships an `Admin` profile and a `<prefix>-default-routing-profile`). ⚠️ On a SAML instance do **not** pass `Email=` inside `--identity-info` (rejected with "Email is not required for this directory type") — the email goes in `--username` only; there is no password. Exact command in `references/identity-center-sso.md`.
+5. **Where to sign in**: the IAM Identity Center access portal (`https://….awsapps.com/start`), **not** the Connect console — click the Connect app tile. These SSO logins are **staff** logins, separate from any web-call (Cognito) login.
 
-   ```bash
-   aws connect create-user --instance-id <instance-id> --region <region> \
-     --username '<user-email>' \
-     --identity-info FirstName=<First>,LastName=<Last> \
-     --phone-config PhoneType=SOFT_PHONE,AutoAccept=false,AfterContactWorkTimeLimit=0 \
-     --security-profile-ids <security-profile-id> \
-     --routing-profile-id <routing-profile-id>
-   ```
-
-   ⚠️ On a SAML instance **do not pass `Email=` inside `--identity-info`** — `create-user` rejects
-   it with `InvalidRequestException: Email is not required for this directory type`. The email
-   lives in `--username` only (that becomes the Login); there is no password on SAML instances.
-5. **Where to sign in / test**: users sign in at the **IAM Identity Center access portal**
-   (`https://<directory-id-or-subdomain>.awsapps.com/start`; exact URL under IAM Identity Center
-   → Settings → "AWS access portal URL"), **not** the Connect console and **not** with a Connect
-   password. They click the Connect app tile and land in the agent workspace. Note these SSO
-   logins are **staff** logins, entirely separate from any web-call frontend (Cognito) login.
-
-Note: Identity Center often lives in a **different account** (org management), so the app config
-and attribute mappings must be edited there — they're not visible from the Connect account's
-credentials, and `sso-admin list-applications` will `AccessDenied` cross-account. That's expected;
-the SAML flow is browser-based and needs no cross-account IAM trust.
-
-Troubleshooting (full walkthrough + table in `references/identity-center-sso.md`): **"invalid
-SAML response"** → attribute mappings missing/malformed (add all three, `Role` = role
-ARN,provider ARN with no space); "not onboarded to this application" → Connect login doesn't
-exactly match the email; 404 after clicking the app → Relay State must be the `SamlRelayStateUrl`
-value (instance UUID, not the full ARN); GetFederationToken denied → role policy/instance
-mismatch; `create-user` "Email is not required for this directory type" → drop `Email=` from
-`--identity-info`.
+Identity Center often lives in a different account (org management) — the app config must be edited there; cross-account `sso-admin` AccessDenied is expected and harmless. Troubleshooting table: `references/identity-center-sso.md`.
 
 ## Phase 5: Claim UK DID (optional)
 
-If `claimUkDid` is `false`, **skip this phase entirely** and tell the user how to attach a number manually (see "Manual phone number" below).
-
-If `claimUkDid` is `true`, claim and associate a UK phone number:
+If `claimUkDid` is `false`, **skip this phase entirely** and tell the user how to attach a number manually (below).
 
 ```bash
-<skill-dir>/scripts/claim-uk-did.sh \
-  <instance-id> \
-  <contact-flow-id> \
-  <region>
+csp claim-did <instance-id> <contact-flow-id> <region>
 ```
 
-The script:
-- Checks if a UK DID is already associated with the flow (idempotent)
-- Searches for available UK DIDs
-- Claims a phone number
-- Associates it with the contact flow
+Idempotent: checks for an existing UK DID on the flow, otherwise searches, claims, and associates one. Capture the printed `PHONE_NUMBER=+44…` for the final report.
 
-Output:
-```
-PHONE_NUMBER=+44...
-PHONE_NUMBER_ID=...
-```
-
-Capture the `PHONE_NUMBER` for the smoke test summary.
-
-### If Claim Fails
-
-- **No UK DIDs available**: AWS inventory rotates — retry, widen search, or fall back to a manual claim in the console (see references/troubleshooting.md)
-- **Already claimed**: If rerunning, the script detects existing associations and skips claiming
+If it fails: **No UK DIDs available** — AWS inventory rotates; retry, or fall back to a manual claim (see `references/troubleshooting.md`). **Already claimed** — reruns detect the association and skip.
 
 ### Manual phone number (alternative to Phase 5)
 
-To use a number in a different country, or to pick a specific number, instruct the user to:
-
-1. Open: `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers`
-2. Click **Claim a number**, choose country and type, and complete any country-specific regulatory bundle the console asks for
+1. Open `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers`
+2. Click **Claim a number**, choose country and type, complete any country-specific regulatory bundle (that address requirement is why the automated path claims UK DIDs only)
 3. In **Contact flow / IVR**, select the flow named `<projectName>-basic-agent-flow` and save
-
-The smoke test will print a warning instead of failing when no number is associated.
 
 ## Phase 6: Smoke Test
 
-Run smoke tests to verify the deployment:
-
 ```bash
-<skill-dir>/scripts/smoke-test.sh \
-  <instance-id> \
-  <contact-flow-id> \
-  <assistant-id> \
-  <ai-agent-id> \
-  <region> \
-  <project-dir>
+csp smoke-test <cwd>/csp-<projectName> <region>
 ```
 
-The script checks:
-- Instance is ACTIVE
-- Contact flow is PUBLISHED
-- AI Agent is ACTIVE or CREATE_COMPLETE
-- UK DID is associated with the flow
-- When `identityCenterEnabled`: the instance's IdentityManagementType is SAML
-- When `contactEventsEnabled`: the contact-events EventBridge rule exists and is ENABLED
-- When `knowledgeBaseEnabled`: the Bedrock knowledge base is ACTIVE (both discovered
-  from the deployed stacks — pass `<project-dir>` as the 6th argument so the script
-  can read `cdk-outputs.json`; omit it and both checks are skipped with a warning)
+The instance/flow/assistant/agent ids are read from `<project-dir>/cdk-outputs.json` (the deploy wrote it — a missing output means deploy first). Add `--no-did-expected` when no UK DID was requested (manual/web-call reach) so the missing number reports as ✓ instead of ⚠.
 
-Output:
-```
-==========================================
-Smoke Test Summary
-==========================================
-Phone Number:   +44...
-Instance ID:    ...
-Flow ID:        ...
-AI Agent ID:    ...
-
-Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-
-✓ All checks passed! Call +44... to test the voice agent.
-```
+Checks: instance ACTIVE; contact flow PUBLISHED; AI agent healthy; UK DID association; plus, per the order flags: IdentityManagementType is SAML, the contact-events rule is ENABLED, the Bedrock KB is ACTIVE. It prints a summary with the phone number and admin console URL — carry those into the final report.
 
 ## Final Report
 
-After a successful smoke test, display a final report whose **call-to-action depends on the reach mode the user chose**. The goal is that the user knows exactly what to click or dial to try their agent. Pull the values from `cdk-outputs.json` (or the smoke-test output): `InstanceId` and `InstanceAlias` from the ConnectInstance stack, `CloudFrontUrl` from the WebcallWidget stack (frontend only), and the claimed `PHONE_NUMBER` (UK-DID path only).
-
-The admin console URL is always `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>`.
+After a successful smoke test, display a final report whose **call-to-action depends on the reach mode**. Pull values from `cdk-outputs.json` / the smoke-test summary. The admin console URL is always `https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>`.
 
 ### Activate tool calling — publish the orchestration agent (all branches, always)
 
-**This step is required for tool calling to work, regardless of reach mode.** Each branch below
-references it. The CDK deploy creates only the orchestration agent's `$LATEST` draft; some
-background wiring that lets the agent actually *call* the AgentCore MCP gateway tools happens only
-when the agent version is **published from the console**. Without this one-time step the agent
-lists the tools but never invokes them.
-
-Tell the user (there are no settings to change — just save and publish):
+**Required for tool calling to work, regardless of reach mode.** The CDK deploy creates only the orchestration agent's `$LATEST` draft; the wiring that lets the agent actually *call* the AgentCore MCP gateway tools happens only when the agent version is **published from the console** (there is no API for this). Without it the agent lists the tools but never invokes them. Tell the user (no settings change — just save and publish):
 
 > One last step to activate tool calling — the CDK deploy can't do this part:
-> 1. Sign in to the Connect admin console.
-> 2. Go to **AI Agents**.
-> 3. Select the **`<projectName>-orchestrator`** agent by clicking the radio
->    selector at the left of its row (do **not** click the name — the name opens
->    a read-only details view with no publish button).
-> 4. Press the **Edit** button in the list toolbar (top-right, between **Delete**
->    and **Create AI Agent**) to open the Agent Builder editor.
-> 5. Press **Save and Publish** (no settings need changing).
->
-> After that the agent can call the MCP gateway tools.
+> 1. Sign in to the Connect admin console → **AI Agents**.
+> 2. Select the **`<projectName>-orchestrator`** agent via the radio selector at the left of its row (do **not** click the name — that opens a read-only view with no publish button).
+> 3. Press **Edit** in the list toolbar (top-right, between **Delete** and **Create AI Agent**).
+> 4. Press **Save and Publish** (nothing needs changing).
 
 ### Branch A — UK number claimed (`claimUkDid` was true)
 
-```
-========================================
-Amazon Connect Deployment Complete
-========================================
-
-Your Nova Sonic 2 AI voice agent is live!
-
-▶ CALL IT NOW:  <phone-number>
-
-Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/csp-<projectName>
-
-Next Steps:
-1. Call <phone-number> to talk to the AI agent
-2. Customize the AI prompt in the Q in Connect console
-3. Adjust the contact flow in the Connect console
-
-To tear down:
-  cd <cwd>/csp-<projectName>
-  npx cdk destroy --all
-```
-
-After showing this report, walk the user through publishing the
-orchestration agent — see "Activate tool calling — publish the orchestration agent" above.
+Report: "Your Nova Sonic 2 AI voice agent is live! ▶ CALL IT NOW: `<phone-number>`" plus the admin console URL and project dir. Next steps: call the number; customize prompts (see "Updating agent prompts" below); adjust the flow in the console. Then walk through the agent-publish step above.
 
 ### Branch B — Web-call frontend (`frontendEnabled` was true)
 
-The CloudFront site is deployed but **cannot place calls until a widget is wired up**. This is a guided, interactive step: the user creates the widget in the console and pastes its embed snippet + security key back into the chat; the skill extracts the values, patches the project, redeploys the widget stack, and stores the key. The user never edits a file by hand.
+The CloudFront site is deployed but **cannot place calls until a widget is wired up**. This is guided and interactive — the user never edits a file by hand. First report: "Your agent is deployed! ▶ YOUR WEB-CALL SITE: `<cloudfront-url>` (one quick setup step needed before it can call — I'll do it for you below)" plus console URL and project dir. Then:
 
-First, show this report:
-
-```
-========================================
-Amazon Connect Deployment Complete
-========================================
-
-Your Nova Sonic 2 AI voice agent is deployed!
-
-▶ YOUR WEB-CALL SITE:  <cloudfront-url>
-  (one quick setup step needed before it can call — I'll do it for you below)
-
-Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/csp-<projectName>
-```
-
-Then walk the user through widget creation and offer to wire it up automatically:
-
-1. Tell the user to create the widget in the console:
-   > Open the admin console → **Channels → Communication widgets → Add widget**.
-   > Choose a **voice/calling** widget type, point it at the contact flow named
-   > **`<projectName>-basic-agent-flow`**, add your CloudFront domain (the full
-   > `<cloudfront-url>`, **including the `https://`**) to the **allowed domains**,
-   > and **enable security** (the signed-JWT option). Save. The console then shows
-   > an **embed code** (`<script>…</script>`) and a **security key**.
+1. Have the user create the widget:
+   > Open the admin console → **Channels → Communication widgets → Add widget**. Choose a **voice/calling** widget type, point it at the contact flow **`<projectName>-basic-agent-flow`**, add your CloudFront domain (the full `<cloudfront-url>`, **including the `https://`**) to the **allowed domains**, and **enable security** (the signed-JWT option). Save — the console shows an **embed code** (`<script>…</script>`) and a **security key**.
 
 2. Ask the user to **paste the full embed `<script>` block and the security key** into the chat.
 
-3. Write the pasted embed snippet to a temp file (e.g. `<cwd>/.widget-embed.txt`) and run the setup script:
+3. Write the embed snippet to a temp file and run:
 
    ```bash
-   <skill-dir>/scripts/setup-widget.sh \
-     <cwd>/csp-<projectName> \
-     <cwd>/.widget-embed.txt \
-     '<security-key>' \
-     <region>
+   csp setup-widget <cwd>/csp-<projectName> <cwd>/.widget-embed.txt '<security-key>' <region>
    ```
 
-   The script (idempotent):
-   - Extracts `id`, `snippetId`, and `scriptUrl` from the embed snippet (via `scripts/extract-widget.js`) and patches `config.connectWidgets` in `lib/config.ts`
-   - Redeploys **only** the `<projectName>-WebcallWidget` stack (creates the signing-key secret and regenerates the site's `config.js`)
-   - Writes the security key into the widget's Secrets Manager secret (`<projectName>-widget-secret-<widgetId>`) so the token Lambda can sign JWTs
-   - Prints the live CloudFront URL on success
+   Idempotent: extracts the widget IDs from the snippet, patches `connectWidgets` in `lib/deployment-values.json`, redeploys **only** the WebcallWidget stack, and stores the security key in the widget's Secrets Manager secret (`<projectName>-widget-secret-<widgetId>`) so the token Lambda can sign JWTs. Delete the temp file afterward. **Never echo the security key** back to the user or write it to a tracked file.
 
-   Delete the temp embed file afterward (it contains the snippet, not a secret, but keep the working dir clean). **Never echo the security key** back to the user or write it to a tracked file.
+4. Create the sign-in login and customer profile (self-signup is disabled, so do it for the user). Ask for username, first/last name, email, phone (E.164), and SAP customer number, then run `csp setup-test-users` (see "Creating customer profiles" below — same command; the locale is REQUIRED). Then tell the user: the site is live at `<cloudfront-url>`; if the login was newly created Cognito emails a temporary password (for an already-confirmed user the existing password is kept — the command says which) — sign in and click to call.
 
-4. After the script succeeds, create the sign-in login and customer profile. The site's Cognito pool has self-signup disabled, so the login must be admin-created — do this for the user instead of sending them to the console. Ask for a username, first name, last name, email, phone (E.164), and SAP customer number, then run:
-
-   ```bash
-   <skill-dir>/scripts/setup-test-users.sh \
-     <cwd>/csp-<projectName> \
-     <username> \
-     <first-name> \
-     <last-name> \
-     <email> \
-     <phone-e164> \
-     <customer-number> \
-     <region> \
-     <locale>
-   ```
-
-   The script (idempotent):
-   - If a WebcallWidget stack exists: creates the Cognito user (temporary password emailed, must be changed on first sign-in) or resends the invitation if the user already exists
-   - Creates (or updates) a matching Customer Profile with the user's identity, phone, email, and SAP customer number — so the AI agent resolves the caller's profile and enforces per-user order access control
-   - If no WebcallWidget stack is found (phone-only deploy): skips Cognito and creates only the Customer Profile (resolved by ANI)
-
-   Then tell the user:
-   > Your web-call site is live at `<cloudfront-url>`. A temporary password was
-   > emailed to `<email>` — sign in with that username and set a new password,
-   > then click to call your AI agent in the browser.
-
-5. **Activate tool calling.** Walk the user through publishing the
-   orchestration agent — see "Activate tool calling — publish the orchestration agent" above.
-
-If the user prefers to do it manually, they can edit `config.connectWidgets` in `lib/config.ts`, redeploy the widget stack, and put the key in Secrets Manager themselves — but the script path above is the recommended flow.
-
-```
-To tear down:
-  cd <cwd>/csp-<projectName>
-  npx cdk destroy --all
-```
+5. Walk through the agent-publish step above.
 
 ### Branch C — Manual number (`claimUkDid` false, `frontendEnabled` false)
 
-```
-========================================
-Amazon Connect Deployment Complete
-========================================
+Report: "Your agent is deployed! ▶ ONE STEP LEFT — attach a phone number:" with the two manual-claim steps from Phase 5, plus console URL and project dir. Then walk through the agent-publish step above.
 
-Your Nova Sonic 2 AI voice agent is deployed!
-
-▶ ONE STEP LEFT — attach a phone number to start testing:
-  1. Open: https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>/phone-numbers
-  2. Claim a number, then set its contact flow to "<projectName>-basic-agent-flow"
-
-Admin Console:  https://console.aws.amazon.com/connect/v2/app/instances/<instance-id>
-Project Dir:    <cwd>/csp-<projectName>
-
-Next Steps:
-1. Attach a number (above), then call it to talk to the AI agent
-2. Customize the AI prompt in the Q in Connect console
-3. Adjust the contact flow in the Connect console
-
-To tear down:
-  cd <cwd>/csp-<projectName>
-  npx cdk destroy --all
-```
-
-After showing this report, walk the user through publishing the
-orchestration agent — see "Activate tool calling — publish the orchestration agent" above.
+In every branch, close with the teardown pointer: `csp teardown <projectName> <region>` (see below).
 
 ## Updating agent prompts (post-deploy)
 
-After deployment, the user can change the orchestration or self-service prompt at any time. The prompt files are the source of truth, so the flow is: edit the file → re-render → redeploy the Wisdom stack.
+The prompt files are the source of truth: edit → re-render → redeploy the Wisdom stack.
 
-1. If the working dir has no `prompts/` yet (e.g. the user kept the defaults at setup), seed it first:
-
-   ```bash
-   <skill-dir>/scripts/init-prompts.sh <skill-dir> <cwd>
-   ```
-
-2. For the prompt the user wants to change, show the current `<cwd>/prompts/<which>.md`, then let them **paste** a replacement or **describe** the change for you to draft and iterate. Write the approved text back to the file. Preserve the required scaffolding (see the "Custom prompts" course above) — the next step validates it.
-
-3. Re-render and redeploy only the Wisdom stack:
+1. If the working dir has no `prompts/` yet: `csp init-prompts <cwd>`
+2. Show the current `<cwd>/prompts/<which>.md`; let the user **paste** a replacement or **describe** the change for you to draft and iterate. Preserve the required scaffolding (see the "Custom prompts" course) — the next step validates it.
+3. Re-render and redeploy only the Wisdom stack (run from the working dir, so the order file next to the project dir is found):
 
    ```bash
-   <skill-dir>/scripts/render-templates.sh \
-     <cwd>/csp-<projectName>/.connect-skill-values.json \
-     <skill-dir>/templates/cdk-app \
-     <cwd>/csp-<projectName>
-
-   cd <cwd>/csp-<projectName>
-   npx cdk deploy <projectName>-Wisdom --require-approval never --outputs-file cdk-outputs.json
+   csp redeploy --stack Wisdom <cwd>/csp-<projectName>
    ```
 
-   The render step runs `validate-prompts.sh` and aborts if required scaffolding is missing. The deploy updates the `CfnAIPrompt`, publishes a new prompt version, and repoints the AI agent — no other stack is touched. Changes take effect on the next call/chat.
+   This re-derives values, re-renders (order/values/prompts survive), synths, and deploys only `<projectName>-Wisdom` — the prompt version is published and the AI agent repointed. Changes take effect on the next call/chat. Use `csp redeploy <project-dir>` (redeploys all stacks) after template-level changes.
 
 ## Creating customer profiles (post-deploy)
 
-**Only run this walkthrough if the instance was deployed with `customerProfilesEnabled`** (check `<projectName>/.connect-skill-values.json`). If it's off, skip — there is no profile lookup in the flow.
+**Only when the deployment has `customerProfilesEnabled`** (check the values file). **Offer** (don't force) to create a test user so the agent greets a real, known caller:
 
-After a deploy with Customer Profiles on, **offer** (don't force) to create a test user so the agent greets a real, known caller instead of the seeded demo customer. Explain it briefly first:
+> Your flow looks the caller up in Customer Profiles and tells the AI agent who they are. The agent uses that customer number to fetch orders, deliveries, and invoices live from the sample SAP order API. No profiles exist until you create one (`csp setup-test-users` below); customer number `0000100042` ties a profile to the seeded sample orders. Want me to create a test user for one of your people? For the **web-call** app this also creates the Cognito sign-in (temporary password by email).
 
-> Your flow looks the caller up in Customer Profiles and tells the AI agent who they are (name, email, customer number). The agent then uses that customer number to fetch their orders, deliveries, and invoices live from the sample SAP order API. Right now there's one **demo** profile (Alice Johnson, customer `0000100042`, who owns the seeded sample orders). Want me to create a test user for one of your people so the agent greets *them*? For the **web-call** app, this also creates the Cognito sign-in (temporary password delivered by email).
-
-If the user declines, stop. If they accept, collect: a username, first/last name, an email address (the temporary password is emailed there), a phone number (E.164, for voice-caller lookup), a customer number (use `0000100042` if they want the seeded sample orders tied to their user; any other value means the SAP tools will find no orders for them), and a locale for the profile (e.g. `de_DE` for German, `en_US` for English — always ask, never assume). Then run the helper (it reads the domain + user pool from `cdk-outputs.json`, is idempotent, and never needs the AWS console):
+If they accept, collect: username, first/last name, email, phone (E.164), customer number (`0000100042` ties them to the seeded sample orders; any other value means the SAP tools find nothing), and a **locale** (e.g. `de-DE`, `en-US` — always ask, never assume; the command requires it). Then:
 
 ```bash
-<skill-dir>/scripts/setup-test-users.sh <cwd>/csp-<projectName> \
-  <username> <First> <Last> <email> <+E164-phone> <customer-number> <locale>
+csp setup-test-users <cwd>/csp-<projectName> --user <username> --first <First> --last <Last> \
+  --email <email> --phone <+E164> --customer-number <customer-number> --locale <locale>
 ```
 
-If the WebcallWidget stack is not deployed, the script skips Cognito and creates only the Customer Profile (phone-only deployments — the caller is then resolved by phone number).
+Idempotent; reads the domain + user pool from `cdk-outputs.json`. With a WebcallWidget stack it creates the Cognito user (temporary password emailed) or resends the invitation, plus the matching Customer Profile; without one (phone-only deploys) it skips Cognito and creates only the profile (resolved by ANI). No redeploy needed — profiles are data. Full model, the Cognito tie-in, and how the profile reaches the agent's session context: `references/customer-profiles.md`.
 
-How it works end to end:
-- The profile stores **identity** (name, email, phone, and the customer number as a custom attribute). The Cognito user's `sub` becomes the profile's `AccountNumber` — the web-call lookup key.
-- On a call, the `profile-lookup` Lambda finds the caller (by phone, by the widget's email attribute, or by the Cognito `sub` searched as `_account`) and injects the profile into the Q Connect session, where the agent reads it as `{{$.Custom.*}}`. This runs **after** context injection, so a matched profile **overrides** the demo baseline; with no match, the agent falls back to the demo context.
-- **Recent activity (orders, deliveries, invoices) is no longer stored on the profile** — the agent fetches it live from the SAP mock API using the profile's customer number (`{{$.Custom.customerId}}`), which the tools require for access control. (The legacy activity attributes — `accountTier`, `recentOrderId`, `orderStatus`, `openCaseCount` — are still bridged into the session if present on a profile, e.g. the seeded demo one, but the helper script no longer sets them.)
-- No redeploy is needed — profiles are data. Tell the user to call (voice from the given number, or the web-call app signed in as that user after completing the emailed first-login password change) and the agent will greet them by name.
+## Teardown
 
-Full reference (model, fields, the Cognito tie-in, and how this composes with context injection): `references/customer-profiles.md`.
+`csp teardown <projectName> <region>` — **DESTRUCTIVE**: runs `cdk destroy` and then sweeps retained resources (the `retainData` survivors). It requires a typed project-name confirmation; `FORCE_TEARDOWN=1` skips the prompt in automation — never set it without the user's explicit go-ahead. For a plain stack destroy that honors retention, `cd <project-dir> && npx cdk destroy --all` still works.
 
 ## Error Handling
 
-If any phase fails:
-1. **Do not proceed to the next phase**
-2. Report the error message clearly
-3. Check references/troubleshooting.md for common solutions
-4. Guide the user to fix the issue before retrying
-
-For partial deployments (e.g., CDK deploy succeeds but claim-uk-did fails):
-- The CDK stacks remain deployed
-- Rerunning claim-uk-did is safe (it's idempotent)
-- User can manually destroy stacks with `cdk destroy --all`
+If any phase fails: **do not proceed to the next phase**; report the error clearly; check `references/troubleshooting.md`; guide the user to a fix before retrying. Failed `csp` commands exit non-zero and print the failing step. Partial deployments are safe: the CDK stacks remain, every `csp` command is idempotent, and rerunning (or `csp deploy --order-file …` to resume the whole flow) picks up where things left off.
 
 ## Important Notes
 
-- **Region**: Deploys to us-east-1 (N. Virginia, default) or eu-central-1 (Frankfurt), chosen at
-  setup. Both support the full voice stack; the Bedrock model profile (`us.*` / `eu.*`) follows the
-  region. UK DIDs can be claimed from either region (no address bundle required), so instant
-  call-in works for both.
-- **Phone Numbers**: The skill claims UK DIDs by default because they have the lightest regulatory footprint of the supported regions — `claim-phone-number` accepts them with no address bundle. Other countries (and UK toll-free / mobile) typically require a regulatory address attached at claim time, which is easier to do in the Connect console; for those, skip Phase 5 and have the user claim manually.
-- **Web-call frontend**: When `frontendEnabled` is `true`, the WebcallWidgetStack deploys CloudFront, Cognito, and API Gateway infrastructure regardless of widget configuration. The site can't place calls until a widget is wired up — the user creates the widget in the Connect console and pastes its embed snippet + security key into the chat, then `scripts/setup-widget.sh` extracts the values, patches `config.connectWidgets`, redeploys the widget stack, and stores the signing key in Secrets Manager (see Branch B of the Final Report). The signing key lives in a Secrets Manager secret (`<projectName>-widget-secret-<widgetId>`), **not** in `config.ts` — the token Lambda reads it at runtime. Never echo the key back to the user or commit it.
-- **Capability composition**: Human transfer, tool calling, and call recording are always on — they ship built into the default contact flow (`flows/basic-agent-flow.json`), which is deployed as-is with only placeholder substitution.
-- **Cost**: Deployed resources incur AWS charges. Remind users to run `cdk destroy --all` when done testing.
-- **Idempotency**: All scripts are idempotent. Rerunning is safe.
-- **Values JSON**: `<projectName>/.connect-skill-values.json` (generated by `build-values.sh` from `.connect-skill-order.<projectName>.json`) lives inside the project directory. It is a derived artifact — edit the order and re-run `build-values.sh` rather than editing values by hand. Helper scripts resolve it from the project dir first, with the legacy repo-root location as fallback for older deployments.
-- **Deterministic alternative**: `scripts/deploy.py` runs this exact flow (same order file, same scripts) as a plain Python CLI — no coding assistant needed. Users can switch between the skill and the CLI freely; see README.
-- **Skill Directory**: Always use `<skill-dir>` to reference scripts/templates. Never hard-code paths.
+- **Cost**: deployed resources incur AWS charges — remind users to tear down when done testing.
+- **Web-call security key**: lives only in Secrets Manager, never in `deployment-values.json` — never echo or commit it.
+- **Files**: order file = user intent (edit this); values file = derived (never hand-edit); `prompts/*.md` and `saml-metadata.xml` in the working dir survive re-renders.
+- **Deterministic alternative**: `csp deploy` is this exact flow without a coding assistant (its own terminal interview, or `--order-file`); users can switch between the skill and the CLI freely — see README.
+- **Skill directory**: always resolve `cli/`, `templates/cdk-app`, and `sample-data` from `<skill-dir>`. Never hard-code paths.

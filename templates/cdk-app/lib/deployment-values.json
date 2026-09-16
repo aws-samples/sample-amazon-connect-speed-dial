@@ -1,0 +1,12 @@
+{
+  "prefix": "",
+  "customerProfilesEnabled": false,
+  "retainData": true,
+  "frontendEnabled": false,
+  "dataLakeEnabled": false,
+  "contactEventsEnabled": false,
+  "knowledgeBaseEnabled": false,
+  "identityCenterEnabled": false,
+  "promptLanguage": "",
+  "connectWidgets": []
+}

@@ -1,152 +1,139 @@
-# Customer Profiles — how it works, and how to create profiles for your users
+# Customer Profiles — how caller identity reaches the agent, and how to create profiles
 
-This explains the `customerProfilesEnabled` capability: what it does on a call, how to create a
-real profile (including one tied to a Cognito web-call user), and how it relates to the
-`contextInjectionEnabled` feature (they **overlap** — see the last section).
+This explains the `customerProfilesEnabled` capability (default **on**): how a caller is
+resolved to a Customer Profile, how the profile's data reaches the contact flow and the AI
+agent, and how to create profiles for your users with `csp setup-test-users`.
+
+## The pieces
+
+- **Customer Profiles domain** — `amazon-connect-<projectName>-profiles`, created by the
+  ConnectInstance stack (always, independent of the flag) and encrypted with the deployment's
+  customer-managed storage key. Its CTR object type is set to `CTR-AutoAssociateOnly`:
+  contacts auto-associate with *existing* profiles, but **no inferred profiles are ever
+  created** — the domain stays empty until you create profiles yourself.
+- **The `get-customer-profile` flow module** (`flows/get-customer-profile.json`, deployed as
+  `<projectName>-get-customer-profile` by the ContactFlow stack) — resolves the caller using
+  **native `GetCustomerProfile` blocks** and returns identity fields to the main flow.
+- **The UpdateSessionContext Lambda** (`lambda/flow/update-session-context/index.py`,
+  FlowLambdas stack; deployed only when `customerProfilesEnabled`) — resolves the caller's
+  profile and pushes identity + latest-order data into the **Q in Connect session**, which is
+  what the agent prompt actually reads (`{{$.Custom.<key>}}`).
+
+**Why both a module and a Lambda?** They feed different consumers. The module's result lands
+in flow-attribute space (`$.Modules.ResultData.*`) — usable by flow blocks for language and
+contact attributes, but invisible to the agent. The agent prompt reads only the Q Connect
+session's `Custom` namespace, writable solely via `qconnect:UpdateSessionData` — so a Lambda
+bridge is required for the agent side.
 
 ## What happens on a call
 
-When `customerProfilesEnabled` is on, the contact flow runs a `provide-profile-context`
-`InvokeLambdaFunction` action (the `profile-lookup` Lambda) before the AI agent starts. That Lambda:
-
-1. **Resolves the caller to a profile** via `customer-profiles:SearchProfiles`, trying three keys in order:
-   1. `_phone` = the caller's phone number (voice calls with an ANI).
-   2. `_account` = the `customerId` contact attribute (set by the web-call widget — see below).
-   3. `_phone` = `DEMO_PROFILE_PHONE` (`+15550100123`) — a **static fallback** so the seeded demo
-      profile always resolves, even on web-call / fresh-DID contacts with no real match.
-2. **Bridges the profile into the Q in Connect session** by calling
-   `qconnect:UpdateSessionData(namespace="Custom")` with the mapped fields.
-3. The orchestration agent then reads those fields in its prompt via `{{$.Custom.<key>}}`.
-
-**Why a Lambda and not the native "Customer profiles" flow block?** The native block writes results
-into the `$.Customer.*` flow-attribute namespace, which the agent prompt does **not** read — the
-agent reads the Q Connect session `Custom` namespace, writable only via `UpdateSessionData`. A
-Lambda bridge is required regardless. (The native block's contact-flow-language `Type` string also
-couldn't be verified from docs without a console capture — see the spec.) The Lambda does both the
-lookup and the bridge in one step.
+1. **Flow module lookup — language + contact attributes.** The first thing the flow does is
+   `InvokeFlowModule` with `email` = the `email` contact attribute (the web-call widget's JWT
+   sets it from the signed-in Cognito user) and `phone_address` = the caller's ANI
+   (`$.CustomerEndpoint.Address`). Inside the module: if the email contains `@`, a native
+   `GetCustomerProfile` block searches `_email`; otherwise, if the phone contains `+`, a
+   second one searches `_phone`. Three branch outcomes come back:
+   - **success** — the module returns `customerNumber`, `firstName`, `lastName`, `locale`
+     (from the profile's name fields and its `customerNumber`/`locale` custom attributes).
+     The flow stores FirstName/LastName/CustomerNumber as contact attributes and sets the
+     contact's **LanguageCode to the profile's `locale`** — a known caller gets the greeting,
+     consent prompt, and voice in *their* language (the prompt-texts data table is keyed by
+     language).
+   - **unknown** (no match, or no usable key) or **multiple** (more than one profile
+     matched) — the flow proceeds anonymously with the deployment's default language.
+2. **Session bridge — agent context.** Just before the AI agent starts, the flow creates the
+   Q Connect session and invokes the UpdateSessionContext Lambda (the `provide-agent-context`
+   action). The Lambda resolves the profile independently, first match wins:
+   **phone (ANI) → `email` attribute (`_email`) → `customerId` attribute (`_account`)** —
+   the last being the widget's Cognito `sub`. On a match it writes to the session `Custom`
+   namespace via `UpdateSessionData`:
+   - identity: `customerName`, `customerId` (the profile's `customerNumber` attribute,
+     falling back to `AccountNumber`), `accountTier`;
+   - the caller's **most recent SAP order**, pre-loaded from the SAP orders DynamoDB table so
+     the agent answers "my last order" without a tool call: `recentOrderId`, `orderStatus`,
+     `orderTotal`, `orderCurrency`, `orderRequestedDelivery`.
+   On no match the Lambda returns gracefully — every `{{$.Custom.*}}` variable interpolates
+   to an empty string and the agent proceeds without caller context (the prompt then forbids
+   order-tool calls until the caller is identified).
+3. **The agent reads the context.** `csp render` splices
+   `prompts/context-injection.snippet.md` into the orchestration prompt; it interpolates the
+   session keys below and instructs the agent to greet the caller by name, treat the data as
+   authoritative, and pass `customerId` as the mandatory `customer_number` on every SAP
+   order-tool call (so callers only ever see their own orders).
 
 ### Fields written to the session (`{{$.Custom.*}}`)
 
-A profile carries a caller's **full** injected context — identity *and* recent activity. This is
-the key idea: one profile is the single place that defines everything the agent should know about a
-user.
-
-| Session key (`{{$.Custom.<key>}}`) | Source on the profile |
+| Session key | Source |
 |---|---|
-| `customerName`  | `FirstName` + `LastName` |
-| `customerId`    | `AccountNumber` |
-| `accountTier`   | `Attributes.accountTier` (custom attribute) |
-| `recentOrderId` | `Attributes.recentOrderId` (custom attribute) |
-| `orderStatus`   | `Attributes.orderStatus` (custom attribute) |
-| `openCaseCount` | `Attributes.openCaseCount` (custom attribute) |
+| `customerName` | profile `FirstName` + `LastName` |
+| `customerId` | profile `Attributes.customerNumber` (fallback: `AccountNumber`) |
+| `accountTier` | profile `Attributes.accountTier` |
+| `recentOrderId`, `orderStatus`, `orderTotal`, `orderCurrency`, `orderRequestedDelivery` | the customer's latest order in the SAP orders table (queried by `customerId`) |
 
-Missing values interpolate to an empty string in the prompt (the agent simply proceeds without them).
+## How callers map to profiles
 
-## The seeded demo profile
+| Caller | Lookup keys tried | Profile field that must match |
+|---|---|---|
+| Voice call (real number) | ANI → `_phone` | `PhoneNumber` |
+| Web call (signed in) | `email` attribute → `_email`, then Cognito `sub` → `_account` | `EmailAddress`, or `AccountNumber` = the `sub` |
 
-At deploy time (when the flag is on), `connect-instance-stack.ts` creates **one** demo profile via
-the `CreateProfile` API:
+**The Cognito `sub` caveat:** the widget's `customerId` attribute is the signed-in user's
+Cognito `sub` — a random UUID. Nothing links it to a profile unless the profile's
+`AccountNumber` *is* that `sub`. That is exactly what `csp setup-test-users` arranges, which
+is why it is the recommended way to create web-call test users (email matching also works,
+since the command stores the user's email on the profile).
 
-- Name **Alice Johnson**, `AccountNumber` **0000100042**, `PhoneNumber` **+15550100123**
-- Custom attributes `accountTier=Premium`, `recentOrderId=0000012345`
+## Creating a user + profile: `csp setup-test-users`
 
-This is the **only** profile that exists out of the box. **Nothing creates profiles on the fly** —
-not Cognito sign-ins, and not contact records (the CTR integration is associated but no profile
-object-type mapping is configured, so CTR auto-ingestion is dormant). Every web call therefore
-resolves to Alice via the static fallback until you create more profiles.
-
-## The web-call (WebRTC) `customerId` — important caveat
-
-The web token Lambda (`lambda/widget/connect-token/index.ts`) passes a `customerId` attribute in the
-widget JWT, set to the signed-in user's **Cognito `sub`** (a random UUID), which surfaces in the
-flow as `$.Attributes.customerId` and is searched as the `_account` key (step 2 above).
-
-But the seeded profile's `AccountNumber` is `0000100042`, **not** a Cognito UUID — so on a web call
-that lookup misses and you fall through to the Alice fallback. To make the widget's `customerId`
-resolve to a real, per-user profile, create a profile whose `AccountNumber` equals that Cognito
-`sub` — exactly what the helper script does for you when you pass `--cognito-username` (next section).
-
-## How to create a profile + injected context for a new user
-
-Use the helper script — it reads the domain and user pool from `cdk-outputs.json`, is idempotent,
-ties to a Cognito user automatically, and never needs the AWS console. (The skill offers to run this
-for you post-deploy when `customerProfilesEnabled`; you can also run it directly.)
-
-The script creates the Cognito login (temporary password by email) **and** the matching profile in
-one step. The widget sends the signed-in user's Cognito `sub` as the `customerId`, which the flow
-searches as the `_account` key; the script sets that `sub` as the profile `AccountNumber` so they
-match. Use customer number `0000100042` to tie the user to the seeded sample orders in the SAP mock
-API (any other value means the order tools find nothing for them):
+No profiles exist after deployment — create one per test user. The command reads the domain
+and user pool from the deployed stacks, is idempotent (an existing profile is updated, a
+pending Cognito user is re-invited), and never needs the AWS console:
 
 ```bash
-scripts/setup-test-users.sh <projectDir> jordan Jordan Lee jordan@example.com \
-  +15557770000 0000100042 <region>
+csp setup-test-users csp-<name> --user jordan --first Jordan --last Lee \
+  --email jordan@example.com --phone +15557770000 --customer-number 0000100042 --locale en-US
 ```
 
+It creates the Cognito login (temporary password delivered **by email**, never printed) and
+the matching profile in one step, with `AccountNumber` set to the user's Cognito `sub` so the
+web-call `_account` lookup matches. `--locale` becomes the profile's `locale` attribute — the
+language the flow switches to for this caller. Use customer number `0000100042` to tie the
+user to the seeded sample orders in the SAP mock API (any other value means the order tools
+and the pre-loaded "recent order" find nothing for them).
+
 If the WebcallWidget stack is not deployed (phone-only), the Cognito step is skipped and the
-profile alone is created — the caller is then resolved by phone number.
+profile alone is created with `AccountNumber` = the customer number — the caller is then
+resolved by phone (ANI), so `--phone` must be the number they will really call from. Then
+**call** — voice from that number, or the web-call app signed in as that user — and the agent
+greets them with their real context. No redeploy; profiles are data.
 
-The profile stores **identity** (name, email, phone, customer number). Recent activity (orders,
-deliveries, invoices) is no longer stored on the profile — the agent fetches it live from the SAP
-mock API using the profile's customer number. (Legacy activity attributes like `recentOrderId` are
-still bridged into the session when present on a profile — the seeded demo profile has them — but
-the script no longer sets them.) Then **call** — voice from the given number, or the web-call app
-signed in as that user — and the agent greets them with their real context. No redeploy; profiles
-are data.
+### Doing it by hand (what the command does)
 
-> Verify it resolved: `aws customer-profiles search-profiles --domain-name <projectName>-profiles
-> --key-name _account --values "<account-or-sub>"`, and check the `profile-lookup` Lambda's
-> CloudWatch logs for `SearchProfiles key=_account ... -> 1 match(es)`.
+Find the Cognito `sub` (`aws cognito-idp admin-get-user --user-pool-id <UserPoolId>
+--username <u> --query 'UserAttributes[?Name==\`sub\`].Value' --output text`), then
+`aws customer-profiles create-profile --domain-name amazon-connect-<projectName>-profiles
+--account-number "<sub>" --party-type INDIVIDUAL --first-name … --last-name … --phone-number …
+--email-address … --attributes customerNumber=<n>,locale=<xx-XX>`.
 
-### Doing it by hand (what the script does)
+## Troubleshooting
 
-If you'd rather not use the script: find the Cognito `sub`
-(`aws cognito-idp admin-get-user --user-pool-id <UserPoolId> --username <u> --query
-'UserAttributes[?Name==\`sub\`].Value' --output text`), then
-`aws customer-profiles create-profile --domain-name <projectName>-profiles --account-number "<sub>"
---first-name … --last-name … --attributes accountTier=…,recentOrderId=…,orderStatus=…,openCaseCount=…`.
-
-### Making this automatic (optional extensions, not built)
-
-- **Seed-on-sign-up:** a Cognito post-confirmation Lambda trigger that runs the same `CreateProfile`
-  with `AccountNumber = sub`, so every new web user gets a profile automatically.
-- **Create-on-the-fly:** have the `profile-lookup` Lambda, on a no-match, `CreateProfile` for the
-  incoming `customerId` before bridging. Requires adding `profile:CreateProfile` to the Lambda role
-  (currently read-only: `profile:SearchProfiles`). This is the deferred "write path."
-- **Real CTR ingestion:** configure a `CTR` profile object-type mapping so Connect auto-builds
-  inferred profiles from call records (keyed by phone/email — most useful for the phone/UK-DID path).
-
-## Relationship to pre-call context injection
-
-`contextInjectionEnabled` and `customerProfilesEnabled` write the **same** `{{$.Custom.*}}` keys, by
-design — they are two layers of the same "what the agent knows about the caller" data, with profiles
-taking precedence:
-
-| | Context injection (`provide-agent-context`) | Customer Profiles (`provide-profile-context`) |
-|---|---|---|
-| Role | Static **demo baseline** | Real **per-user** data |
-| Source | Hardcoded values in the Lambda | Looked up live from the caller's profile |
-| Keys written | `recentOrderId`, `orderStatus`, `openCaseCount` | `customerName`, `customerId`, `accountTier`, `recentOrderId`, `orderStatus`, `openCaseCount` |
-| Runs | First (baseline) | **Last (overrides)** |
-
-**Run order (when both on):** `provide-agent-context` → `provide-profile-context` → AI Agent block.
-Context injection lays down a baseline; profile-lookup runs last, so **a matched profile overrides
-it** with that caller's real data. With **no** profile match, profile-lookup writes nothing and the
-demo baseline stands — so the agent always has *something*. The shared `{{$.Custom.*}}` prompt
-snippet (identity + recent-activity sections) is appended once when **either** flag is on.
-
-**Demo coherence:** the seeded profile and the baseline line up — Alice Johnson / `0000100042` /
-Premium, `recentOrderId=0000012345` / `orderStatus=Invoiced` — and the gateway's
-`get_order_status(0000012345)` tool also returns `Invoiced`. One consistent customer across all
-three features.
-
-**Why this design (vs. keying context off the resolved customer):** the Q Connect session is
-write-only from a Lambda (`GetSession` returns no `data`), so context injection genuinely can't read
-what profile-lookup resolved. Rather than route the id through a contact attribute, we let the
-**profile itself carry the full context** and override the baseline — simpler, and the profile is
-the natural home for per-user data anyway.
-
-**Choosing flags:**
-- **Both on** (default): real data when a profile matches, demo baseline otherwise. Recommended.
-- **Profiles only:** real per-user data, but an unmatched caller gets no context (no baseline).
-- **Context injection only:** everyone gets the same demo context; no profile lookup.
+- **Verify a profile resolves:** `aws customer-profiles search-profiles --domain-name
+  amazon-connect-<projectName>-profiles --key-name _account --values "<sub>"` (or `_phone` /
+  `_email`). Note: the domain is encrypted with the deployment's customer-managed key, so the
+  *caller's* credentials need `kms:Decrypt` on that key — an `AccessDeniedException` from the
+  CLI usually means KMS, not IAM on the profile actions.
+- **Agent doesn't greet by name:** check the UpdateSessionContext Lambda's CloudWatch logs
+  (FlowLambdas stack; description "Resolves caller profile and pushes identity data into the
+  Q Connect session"). It logs at `LOG_LEVEL=ERROR` by default — set the environment variable
+  to `INFO` to see `SearchProfiles key=… -> N match(es)` per lookup key.
+- **Known caller still gets the default language:** that is the *module's* lookup (email →
+  phone) failing while the Lambda's (phone → email → account) may still succeed — e.g. a
+  voice caller whose profile has a phone but the contact carries no `email` attribute is fine,
+  but a profile found only by `_account` never switches the language (the module doesn't
+  search `_account`). Make sure the profile carries the email and/or E.164 phone number.
+- **`multiple` outcome (anonymous despite a profile):** more than one profile shares the
+  email or phone — the native block takes its `MultipleFoundError` branch. Delete or merge
+  the duplicates; `setup-test-users` updates rather than duplicates, so dupes usually come
+  from manual `create-profile` runs.
+- **Recent order is empty for an identified caller:** the customer number on the profile has
+  no orders in the SAP mock data — use `0000100042` for the seeded sample orders.

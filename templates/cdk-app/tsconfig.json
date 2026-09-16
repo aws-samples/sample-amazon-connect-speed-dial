@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "lib": ["es2022"],
+    "lib": ["es2022", "esnext.disposable"],
     "declaration": false,
     "outDir": "dist",
     "strict": true,
@@ -10,11 +10,13 @@
     "strictNullChecks": true,
     "noImplicitReturns": true,
     "esModuleInterop": true,
+    "resolveJsonModule": true,
     "inlineSourceMap": true,
     "inlineSources": true,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
-    "typeRoots": ["./node_modules/@types"]
+    "typeRoots": ["./node_modules/@types"],
+    "types": ["node"]
   },
   "exclude": ["node_modules", "cdk.out", "lambda", "dist"]
 }

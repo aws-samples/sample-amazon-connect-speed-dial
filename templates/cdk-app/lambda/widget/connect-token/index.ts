@@ -26,7 +26,7 @@ async function getSecretKey(widgetId: string): Promise<string> {
 
   if (!response.SecretString || response.SecretString === 'PLACEHOLDER_SET_VIA_SETUP_WIDGET') {
     throw new Error(
-      `Secret for widget ${widgetId} is not configured. Run scripts/setup-widget.sh to store the Connect widget security key.`,
+      `Secret for widget ${widgetId} is not configured. Run "csp setup-widget" to store the Connect widget security key.`,
     );
   }
 

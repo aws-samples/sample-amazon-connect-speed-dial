@@ -176,13 +176,11 @@ export class ContactFlowStack extends BlueprintStack {
       lastAttr = cfnAttr;
     }
 
-    new cdk.CfnOutput(this, 'PromptTextsDataTableArn', { value: promptDataTable.attrArn });
-
     // --- Seed prompt records via Custom Resource ---
     // CfnDataTableRecord has issues resolving attribute IDs; use a Lambda-backed
     // custom resource that calls BatchCreateDataTableValue directly via SigV4.
     // The seed file is gender-keyed (feminine/masculine); select the set matching
-    // this deployment's voiceGender (resolved at render time by render-templates.sh).
+    // this deployment's voiceGender (resolved at render time by `csp render`).
     const seedDataPath = path.join(__dirname, '..', 'flows', 'prompt-texts-seed.json');
     const seedAll = JSON.parse(fs.readFileSync(seedDataPath, 'utf-8'));
     const voiceGender = '{{voiceGender}}' as 'feminine' | 'masculine';
@@ -245,8 +243,6 @@ export class ContactFlowStack extends BlueprintStack {
     // Ensure the data table and its records exist before flows that may query it.
     consentModule.addDependency(promptDataTable);
 
-    new cdk.CfnOutput(this, 'ConsentAnalyticsModuleArn', { value: consentModule.attrContactFlowModuleArn });
-
     // --- Get Customer Profile Module ---
     // Looks up the caller's profile by email (from contact attributes) with
     // phone fallback (from ANI). Makes $.Customer.* fields available downstream.
@@ -255,49 +251,29 @@ export class ContactFlowStack extends BlueprintStack {
     for (const [k, v] of Object.entries(subs)) {
       profileModuleContent = profileModuleContent.split(k).join(v);
     }
-    // Emit the fully substituted, import-ready module JSON next to the source
-    // file. This is the file to import over the placeholder module in the
-    // Connect console (see the KNOWN LIMITATION note below).
-    fs.writeFileSync(
-      path.join(__dirname, '..', 'flows', 'get-customer-profile.import.json'),
-      profileModuleContent,
+    // A module's interface (inputs, outputs, custom branches) lives in the
+    // resource's top-level `settings` property — a JSON-Schema-shaped document
+    // with keys input / resultData / transitions. Without it, the Connect API
+    // rejects any EndFlowModuleExecution carrying Result/ResultData (which is
+    // exactly what earlier attempts hit, forcing a manual console import). The
+    // console export keeps the identical document under Metadata.settings, so
+    // extract it from the flow file rather than duplicating it here.
+    //
+    // The Content's own nested `Settings` block (InputParameters /
+    // OutputParameters / Transitions — different key names, mostly empty) is a
+    // separate, mandatory structure: CREATE fails with "JSON field is missing
+    // or null for field name: settings" if it's absent. The flow file carries it.
+    const profileModuleSettings = JSON.stringify(
+      JSON.parse(profileModuleContent).Metadata.settings,
     );
-    // KNOWN LIMITATION: the AWS::Connect::ContactFlowModule CFN handler rejects
-    // module content that declares input/output parameters and custom branch
-    // transitions (Metadata.settings) with InvalidContactFlowModuleException —
-    // even though the identical JSON imports cleanly through the console. So
-    // CloudFormation creates a minimal PLACEHOLDER module here, and the full
-    // module (flows/get-customer-profile.json, rendered into the project dir)
-    // must be imported over it manually in the Connect console after deploy.
-    // The placeholder content is static, so subsequent cdk deploys produce no
-    // diff on this resource and the manually imported content survives them.
-    const profileModulePlaceholder = JSON.stringify({
-      Version: '2019-10-30',
-      StartAction: 'end',
-      Metadata: {
-        entryPointPosition: { x: 0, y: 0 },
-        ActionMetadata: { end: { position: { x: 200, y: 0 } } },
-      },
-      Actions: [
-        { Parameters: {}, Identifier: 'end', Type: 'EndFlowModuleExecution', Transitions: {} },
-      ],
-      Settings: {
-        InputParameters: [],
-        OutputParameters: [],
-        Transitions: [
-          { DisplayName: 'Success', ReferenceName: 'Success', Description: '' },
-          { DisplayName: 'Error', ReferenceName: 'Error', Description: '' },
-        ],
-      },
-    });
     const profileModule = new connect.CfnContactFlowModule(this, 'GetCustomerProfileModule', {
       instanceArn: props.instanceArn,
       name: this.namer.connect('get-customer-profile'),
-      content: profileModulePlaceholder,
-      description: 'Customer profile lookup module — PLACEHOLDER. Import flows/get-customer-profile.json from the project directory over this module in the Connect console.',
+      content: profileModuleContent,
+      settings: profileModuleSettings,
+      state: 'ACTIVE',
+      description: 'Customer profile lookup module — resolves the caller by email with phone fallback and returns customerNumber, firstName, lastName, locale.',
     });
-
-    new cdk.CfnOutput(this, 'GetCustomerProfileModuleArn', { value: profileModule.attrContactFlowModuleArn });
 
     // Set the data table ID now that the table resource exists.
     subs.__DATA_TABLE_ID__ = promptDataTable.attrArn;
@@ -324,6 +300,10 @@ export class ContactFlowStack extends BlueprintStack {
     this.contactFlowArn = flow.attrContactFlowArn;
     this.contactFlowId = flow.ref;
 
+    // --- Stack outputs ---
+    new cdk.CfnOutput(this, 'PromptTextsDataTableArn', { value: promptDataTable.attrArn });
+    new cdk.CfnOutput(this, 'ConsentAnalyticsModuleArn', { value: consentModule.attrContactFlowModuleArn });
+    new cdk.CfnOutput(this, 'GetCustomerProfileModuleArn', { value: profileModule.attrContactFlowModuleArn });
     new cdk.CfnOutput(this, 'ContactFlowArn', { value: this.contactFlowArn });
     new cdk.CfnOutput(this, 'ContactFlowId', { value: this.contactFlowId });
   }

@@ -33,8 +33,8 @@ without the skill):
 2. **Before deploying** — create the Identity Center application (catalog "Amazon Connect"
    or custom SAML 2.0 app), download its **SAML metadata XML**, and save it as
    `saml-metadata.xml` in your working directory (next to the order file).
-   `render-templates.sh` carries it into the rendered project, and CDK synth **fails
-   without it**. Preflight (`preflight.sh <region> <order-file>`) verifies it exists.
+   `csp render` carries it into the rendered project, and CDK synth **fails
+   without it**. Preflight (`csp preflight <region> <order-file>`) verifies it exists.
 
 3. Deploy normally — the Connect instance is created with `identityManagementType: SAML`,
    and the stack **automatically creates the IAM SAML Provider and Federation Role** from
@@ -154,7 +154,7 @@ Users sign in at the **IAM Identity Center access portal**, **not** the Connect 
 > These SSO logins are **staff** logins (agents/admins handling the Connect workspace and human
 > transfers). They are **entirely separate** from the **web-call frontend** login
 > (`frontendEnabled`), which is a **Cognito** user for the browser calling site — different
-> system, different credentials, created via `scripts/setup-test-users.sh`.
+> system, different credentials, created via `csp setup-test-users`.
 
 ## Troubleshooting
 

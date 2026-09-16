@@ -144,8 +144,9 @@ export class ConnectInstanceStack extends BlueprintStack {
     );
 
     // --- Customer Profiles ---
-    // Compliance note: this domain and the seeded demo profile store personal
-    // data (name, email, phone, account/order details). When Customer Profiles
+    // Compliance note: this domain and the profiles created in it (e.g. via
+    // `csp setup-test-users`) store personal data (name, email, phone,
+    // account/order details). When Customer Profiles
     // holds regulated data (PHI under HIPAA, PII subject to GDPR, or cardholder
     // data under PCI-DSS), additional controls are the customer's responsibility
     // under the AWS shared responsibility model — e.g. a customer-managed KMS key
@@ -190,15 +191,16 @@ export class ConnectInstanceStack extends BlueprintStack {
           ],
         }),
         // CreateProfile/SearchProfiles are granted HERE (on the domain resource,
-        // which runs first) rather than on the SeedDemoProfile resource below,
-        // even though the seed is what actually calls them. All AwsCustomResource
-        // constructs in a stack share ONE provider-Lambda role; granting the seed
-        // its own policy attaches it to that role only ~2s before the seed invokes,
-        // and IAM role-policy propagation to the assumed-role session is eventually
+        // which runs first) rather than on a later custom resource that would
+        // call them. All AwsCustomResource constructs in a stack share ONE
+        // provider-Lambda role; granting a later resource its own policy
+        // attaches it to that role only ~2s before that resource invokes, and
+        // IAM role-policy propagation to the assumed-role session is eventually
         // consistent (~5-15s), so on a fresh CREATE the call raced ahead of the
-        // grant and failed with "not authorized to perform: profile:CreateProfile".
-        // Attaching it to createDomain gives the grant the full domain-creation
-        // window (~2+ min) to propagate before SeedDemoProfile runs.
+        // grant and failed with "not authorized to perform: profile:CreateProfile"
+        // (observed with the since-removed demo-profile seeder). Attaching it to
+        // createDomain gives the grant the full domain-creation window (~2+ min)
+        // to propagate before any same-role resource needs it.
         new iam.PolicyStatement({
           actions: ['profile:CreateProfile', 'profile:SearchProfiles'],
           resources: [
@@ -301,7 +303,7 @@ export class ConnectInstanceStack extends BlueprintStack {
     // creation. The default CTR template creates a bare inferred profile on
     // every contact that doesn't match an existing profile (by _ctrContactId
     // then _phone), polluting the domain with attribute-less duplicates that
-    // shadow the profiles provisioned by setup-test-users.sh.
+    // shadow the profiles provisioned by `csp setup-test-users`.
     const ctrTemplate = new cr.AwsCustomResource(this, 'CTRAutoAssociateOnly', {
       onCreate: {
         service: 'CustomerProfiles',
@@ -343,7 +345,7 @@ export class ConnectInstanceStack extends BlueprintStack {
 
     // --- S3 Storage Bucket ---
     const storageBucket = new s3.Bucket(this, 'StorageBucket', {
-      bucketNamePrefix: `${this.prefix}-${config.storageBucketBaseName}`,
+      bucketNamePrefix: this.namer.bucketPrefix('connect-storage'),
       bucketNamespace: s3.BucketNamespace.ACCOUNT_REGIONAL,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.KMS,
@@ -459,25 +461,16 @@ export class ConnectInstanceStack extends BlueprintStack {
     // EventBridge bus automatically — no instance storage config needed.
     // The ContactEvents stack's rules match them directly.
 
-    new cdk.CfnOutput(this, 'InstanceArn', { value: this.instanceArn });
-    new cdk.CfnOutput(this, 'InstanceId', { value: this.instanceId });
-    new cdk.CfnOutput(this, 'InstanceAlias', { value: this.instanceAlias });
-    new cdk.CfnOutput(this, 'ServiceRole', {
-      value: instance.attrServiceRole,
-      description: 'Connect service role ARN — used when configuring SAML trust in Identity Center',
-    });
-    new cdk.CfnOutput(this, 'CustomerProfilesDomainName', { value: this.customerProfilesDomainName });
-    new cdk.CfnOutput(this, 'StorageBucketName', { value: this.storageBucketName });
-    new cdk.CfnOutput(this, 'StorageKmsKeyArn', { value: storageKey.keyArn });
-    new cdk.CfnOutput(this, 'IdentityManagementType', { value: identityManagementType });
-
     // --- SAML federation resources (Identity Center) ---
     // When using SAML identity, create the IAM SAML Provider and Federation Role
     // needed for Identity Center SSO into Connect. These are the resources that
     // Identity Center's attribute mapping references (Role = <FederationRoleArn>,<SamlProviderArn>).
+    let samlProvider: iam.SamlProvider | undefined;
+    let samlFederationRole: iam.Role | undefined;
+    let samlRelayStateUrl: string | undefined;
     if (config.identityCenterEnabled) {
       const instanceUuid = cdk.Fn.select(1, cdk.Fn.split('instance/', this.instanceArn));
-      const relayState = `https://${this.region}.console.aws.amazon.com/connect/federate/${instanceUuid}`;
+      samlRelayStateUrl = `https://${this.region}.console.aws.amazon.com/connect/federate/${instanceUuid}`;
 
       // IAM SAML Provider — created from the Identity Center SAML metadata XML.
       // The metadata file must be downloaded from the Identity Center console
@@ -491,12 +484,12 @@ export class ConnectInstanceStack extends BlueprintStack {
           'IAM Identity Center metadata → Download.\n' +
           'Save it in your WORKING directory (next to .connect-skill-order.json), NOT here — ' +
           'this project dir is generated output and re-renders would lose it. ' +
-          'render-templates.sh / redeploy.sh copy it into the rendered project automatically.\n' +
+          '"csp render" / "csp redeploy" copy it into the rendered project automatically.\n' +
           `(Expected rendered location: ${samlMetadataPath})`,
         );
       }
 
-      const samlProvider = new iam.SamlProvider(this, 'IdentityCenterSamlProvider', {
+      samlProvider = new iam.SamlProvider(this, 'IdentityCenterSamlProvider', {
         metadataDocument: iam.SamlMetadataDocument.fromFile(samlMetadataPath),
         name: `${this.prefix}-IdentityCenterSamlProvider`,
       });
@@ -504,7 +497,7 @@ export class ConnectInstanceStack extends BlueprintStack {
       // IAM Federation Role — assumed via SAML console sign-in flow.
       // Identity Center sends a SAML assertion; AWS STS validates it against the
       // provider above and issues temporary credentials for this role.
-      const samlFederationRole = new iam.Role(this, 'SamlFederationRole', {
+      samlFederationRole = new iam.Role(this, 'SamlFederationRole', {
         assumedBy: new iam.SamlConsolePrincipal(samlProvider),
         description: 'Role for SAML federation with Amazon Connect via IAM Identity Center',
       });
@@ -523,22 +516,6 @@ export class ConnectInstanceStack extends BlueprintStack {
           cdk.Fn.join('', [this.instanceArn, '/user/*']),
         ],
       }));
-
-      // --- Outputs for SAML setup ---
-      new cdk.CfnOutput(this, 'SamlRelayStateUrl', {
-        value: relayState,
-        description: 'Configure this as the Relay State in your IAM Identity Center Amazon Connect application',
-      });
-
-      new cdk.CfnOutput(this, 'SamlProviderArn', {
-        value: samlProvider.samlProviderArn,
-        description: 'SAML Provider ARN — use in Identity Center Role attribute mapping (second value in the comma pair)',
-      });
-
-      new cdk.CfnOutput(this, 'SamlFederationRoleArn', {
-        value: samlFederationRole.roleArn,
-        description: 'SAML Federation Role ARN — use in Identity Center Role attribute mapping (first value in the comma pair)',
-      });
     }
 
     // --- Analytics Data Lake ---
@@ -564,6 +541,35 @@ export class ConnectInstanceStack extends BlueprintStack {
         if (child instanceof cdk.CfnOutput && child.exportName === 'DataLakeAccessErrors') {
           child.exportName = `${this.prefix}-DataLakeAccessErrors`;
         }
+      });
+    }
+
+    // --- Stack outputs ---
+    // Grouped: core instance, then SAML federation resources (only emitted
+    // when Identity Center is enabled).
+    new cdk.CfnOutput(this, 'InstanceArn', { value: this.instanceArn });
+    new cdk.CfnOutput(this, 'InstanceId', { value: this.instanceId });
+    new cdk.CfnOutput(this, 'InstanceAlias', { value: this.instanceAlias });
+    new cdk.CfnOutput(this, 'ServiceRole', {
+      value: instance.attrServiceRole,
+      description: 'Connect service role ARN — used when configuring SAML trust in Identity Center',
+    });
+    new cdk.CfnOutput(this, 'CustomerProfilesDomainName', { value: this.customerProfilesDomainName });
+    new cdk.CfnOutput(this, 'StorageBucketName', { value: this.storageBucketName });
+    new cdk.CfnOutput(this, 'StorageKmsKeyArn', { value: storageKey.keyArn });
+    new cdk.CfnOutput(this, 'IdentityManagementType', { value: identityManagementType });
+    if (samlProvider && samlFederationRole && samlRelayStateUrl) {
+      new cdk.CfnOutput(this, 'SamlRelayStateUrl', {
+        value: samlRelayStateUrl,
+        description: 'Configure this as the Relay State in your IAM Identity Center Amazon Connect application',
+      });
+      new cdk.CfnOutput(this, 'SamlProviderArn', {
+        value: samlProvider.samlProviderArn,
+        description: 'SAML Provider ARN — use in Identity Center Role attribute mapping (second value in the comma pair)',
+      });
+      new cdk.CfnOutput(this, 'SamlFederationRoleArn', {
+        value: samlFederationRole.roleArn,
+        description: 'SAML Federation Role ARN — use in Identity Center Role attribute mapping (first value in the comma pair)',
       });
     }
   }
