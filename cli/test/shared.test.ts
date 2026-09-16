@@ -108,6 +108,8 @@ describe('outputBySuffix', () => {
 describe('SKILL_ROOT', () => {
   it('points at the repo root', () => {
     expect(existsSync(join(SKILL_ROOT, 'cli', 'package.json'))).toBe(true)
-    expect(existsSync(join(SKILL_ROOT, 'scripts'))).toBe(true)
+    // Anchored on the CDK template dir, not the old `scripts/` directory the
+    // csp CLI replaced — asserting on a deleted path made this fail on main.
+    expect(existsSync(join(SKILL_ROOT, 'templates', 'cdk-app'))).toBe(true)
   })
 })

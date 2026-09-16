@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Nothing in this workflow reads a secret or touches AWS, so fork PRs are safe
+# on the `pull_request` trigger: they run with a read-only token, no secrets in
+# scope, and on an ephemeral GitHub-hosted runner. Do NOT switch this to
+# `pull_request_target`, and do NOT move it to a self-hosted runner — either
+# would run untrusted fork code with real credentials in reach.
+permissions:
+  contents: read
+
+# Supersede in-flight PR runs when a branch is pushed again, but never cancel a
+# run on main mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unit:
+    name: Unit tests, typecheck, credential-free suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Install CLI dependencies
+        working-directory: cli
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: cli
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: cli
+        run: npx vitest run
+
+      # These drive the csp CLI (values/render only — no synth, so no container
+      # runtime needed) and assert on what it produced.
+      #
+      # tests/test-deploy-cli.sh is deliberately excluded: it invokes
+      # `csp deploy`, which reaches `preflight({ bootstrap: true })` and can
+      # create a real CDKToolkit stack. Its `|| true` guard also means a
+      # credential-less run passes without asserting anything. Re-add it once
+      # it hard-fails on resolvable credentials instead of swallowing them.
+      - name: CLI-driven suites
+        run: |
+          tests/test-build-values.sh
+          tests/test-validate-prompts.sh
+          tests/test-e2e-greeting-resolution.sh
+          tests/test-region-language.sh
+
+      # These bypass the CLI and inspect shipped template/Lambda sources
+      # directly with python3 (preinstalled on ubuntu-latest).
+      - name: Template and Lambda suites
+        run: |
+          tests/test-sap-normalize.sh
+          tests/test-flow-asr-tuning.sh
+          tests/test-flow-profile-miss.sh
+
+  synth:
+    name: cdk synth (capability matrix)
+    # Gated on `unit` so a failing typecheck does not first burn several minutes
+    # on container-based asset bundling.
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `bin/connect-blueprint.ts` renders the region in and reads the account
+      # from the environment. There is no `fromLookup` anywhere in lib/, so
+      # synth needs no AWS credentials — only a syntactically valid account.
+      CDK_DEFAULT_ACCOUNT: "111111111111"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          # csp synth runs its own `npm ci` inside the rendered project, so the
+          # template lockfile is worth caching alongside the CLI's.
+          cache-dependency-path: |
+            cli/package-lock.json
+            templates/cdk-app/package-lock.json
+
+      - name: Install CLI dependencies
+        working-directory: cli
+        run: npm ci
+
+      # ubuntu-latest ships a running Docker daemon, which is all
+      # tests/lib/container-runtime.sh needs for CDK's Lambda asset bundling.
+      # (test-all-capabilities.sh re-runs test-region-language.sh, which the
+      # unit job also covers; the few seconds of overlap keep this the single
+      # documented entry point.)
+      - name: Default capability matrix
+        run: tests/test-all-capabilities.sh
+
+      # Optional order-file flags no other suite exercises — contactEvents,
+      # dataLake, retainData, and identityCenter (which is fixed irreversibly
+      # at Connect instance creation).
+      - name: Optional capability flags
+        run: tests/test-capability-flags.sh
